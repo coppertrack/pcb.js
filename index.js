@@ -40,14 +40,31 @@ function pcbStackupZip(url, options) {
             if (err) {
               return reject(err);
             }
-            const board_layers = countLayers(stackup.layers, ['icu', 'bcu', 'tcu']);
-            return resolve({ board_layers, stackup });
+            let board_width = stackup.top.width;
+            let board_length = stackup.top.height;
+            // Convert to mm
+            if (stackup.top.units == "in") {
+              board_width = board_width * 25.4;
+              board_length = board_length * 25.4;
+            }
+            const board_layers = countLayers(stackup.layers, [
+              "icu",
+              "bcu",
+              "tcu",
+            ]);
+
+            return resolve({
+              board_width,
+              board_length,
+              board_layers,
+              stackup,
+            });
           });
         })
     );
 }
 
-const colourMap = {
+const colorMap = {
   copperFinish: {
     bare: "#C87533",
     gold: "goldenrod",
@@ -74,12 +91,12 @@ const colourMap = {
   },
 };
 
-// turn color options into a CSS style string
+// turn color options into a pcb stackup color options
 function getColors(options) {
   const colors = {
-    solderMask: colourMap.solderMask.green,
-    silkScreen: colourMap.silkScreen.white,
-    copperFinish: colourMap.copperFinish.hasl,
+    solderMask: colorMap.solderMask.green,
+    silkScreen: colorMap.silkScreen.white,
+    copperFinish: colorMap.copperFinish.hasl,
   };
   if (options.solderMask != null) {
     colors.solderMask = colorMap.solderMask[options.solderMask];
@@ -90,13 +107,15 @@ function getColors(options) {
   if (options.copperFinish != null) {
     colors.copperFinish = colorMap.copperFinish[options.copperFinish];
   }
-  return `.pcb-stackup_fr4 {color: #4D542C;}
-  .pcb-stackup_cu {color: lightgrey;}
-  .pcb-stackup_cf {color: ${colors.copperFinish};}
-  .pcb-stackup_sm {color: ${colors.solderMask};}
-  .pcb-stackup_ss {color: ${colors.silkScreen};}
-  .pcb-stackup_sp {color: rgba(0, 0, 0, 0.0);}
-  .pcb-stackup_out {color: black;}`;
+  return {
+    fr4: "#4D542C",
+    cu: "lightgrey",
+    cf: colors.copperFinish,
+    sm: colors.solderMask,
+    ss: colors.silkScreen,
+    sp: "rgba(0, 0, 0, 0.0)",
+    out: "black",
+  };
 }
 
 // A function to count the layers of a specific type

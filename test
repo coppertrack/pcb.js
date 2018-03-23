@@ -1,0 +1,35 @@
+#!/usr/bin/env node
+const fs = require("fs");
+const pcbStackupZip = require("./index");
+
+const url =
+  process.argv[2] ||
+  "https://kitspace.org/boards/github.com/kasbah/push-on-hold-off/push-on-hold-off-1767c8a-gerbers.zip";
+
+console.log(`fetching ${url}`);
+
+pcbStackupZip(url, {
+  solderMask: "white",
+  silkScreen: "black",
+  copperFinish: "gold",
+}).then(out => {
+  console.log("board_width:", out.board_width);
+  console.log("board_length:", out.board_length);
+  console.log("board_layers:", out.board_layers);
+  console.log("writing top.svg");
+  fs.writeFile("top.svg", out.stackup.top.svg, err => {
+    if (err) {
+      console.error("ERROR writing top.svg");
+      console.error(err);
+      process.exit(1);
+    }
+  });
+  console.log("writing bottom.svg");
+  fs.writeFile("bottom.svg", out.stackup.bottom.svg, err => {
+    if (err) {
+      console.error("ERROR writing bottom.svg");
+      console.error(err);
+      process.exit(1);
+    }
+  });
+});
