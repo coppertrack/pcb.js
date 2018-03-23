@@ -5,8 +5,13 @@ const jszip = require("jszip");
 
 function pcbStackupZip(url, options) {
   options = options || {};
+  // you can use your own style in the color field or solderMask, silkScreen and copperFinish
   options.color = options.color || getColors(options);
+  // pcb-stackup will fill gaps in the outline but is a bit too strict by
+  // default in my experience, the units are currently the gerber units but
+  // will always be in mm when pcb-stackup is updated to 4.0.0
   options.outlineGapFill = options.outlineGapFill || 0.05;
+  // we use this id to apply the styles
   options.id = "pcb-stackup";
   return superagent
     .get(url)
