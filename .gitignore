@@ -1,0 +1,5 @@
+node_modules
+top.svg
+bottom.svg
+.cache
+yarn-error.log

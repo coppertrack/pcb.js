@@ -1,0 +1,11 @@
+{
+  "name": "pcb-stackup-zip-example",
+  "private": true,
+  "scripts": {
+    "build": "browserify example.js > bundle.js",
+    "serve": "python -m SimpleHTTPServer"
+  },
+  "devDependencies": {
+    "browserify": "^16.1.1"
+  }
+}

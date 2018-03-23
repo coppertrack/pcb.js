@@ -14,6 +14,7 @@ function pcbStackupZip(url, options) {
   return superagent
     .get(url)
     .set("accept", "application/zip")
+    .responseType("blob")
     .parse(binaryParser)
     .buffer()
     .then(r => r.body)
