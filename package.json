@@ -9,5 +9,8 @@
     "pcb-stackup": "^3.0.0",
     "superagent": "^3.8.2",
     "superagent-binary-parser": "^1.0.1"
+  },
+  "devDependencies": {
+    "prettier": "^1.11.1"
   }
 }
