@@ -1,6 +1,5 @@
 const pcbStackup = require("pcb-stackup");
 const superagent = require("superagent");
-const binaryParser = require("superagent-binary-parser");
 const jszip = require("jszip");
 
 function pcbStackupZip(url, options) {
@@ -15,7 +14,6 @@ function pcbStackupZip(url, options) {
     .get(url)
     .set("accept", "application/zip")
     .responseType("blob")
-    .parse(binaryParser)
     .buffer()
     .then(r => r.body)
     .then(jszip.loadAsync)
