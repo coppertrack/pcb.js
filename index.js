@@ -39,9 +39,9 @@ function pcbStackupZip(url, options) {
           pcbStackup(layers, options, (err, stackup) => {
             if (err) {
               return reject(err);
-            } else {
-              return resolve(stackup);
             }
+            const board_layers = countLayers(stackup.layers, ['icu', 'bcu', 'tcu']);
+            return resolve({ board_layers, stackup });
           });
         })
     );
@@ -74,6 +74,7 @@ const colourMap = {
   },
 };
 
+// turn color options into a CSS style string
 function getColors(options) {
   const colors = {
     solderMask: colourMap.solderMask.green,
@@ -89,10 +90,6 @@ function getColors(options) {
   if (options.copperFinish != null) {
     colors.copperFinish = colorMap.copperFinish[options.copperFinish];
   }
-  return toStyle(colors);
-}
-
-function toStyle(colors) {
   return `.pcb-stackup_fr4 {color: #4D542C;}
   .pcb-stackup_cu {color: lightgrey;}
   .pcb-stackup_cf {color: ${colors.copperFinish};}
@@ -100,6 +97,17 @@ function toStyle(colors) {
   .pcb-stackup_ss {color: ${colors.silkScreen};}
   .pcb-stackup_sp {color: rgba(0, 0, 0, 0.0);}
   .pcb-stackup_out {color: black;}`;
+}
+
+// A function to count the layers of a specific type
+function countLayers(layers, types) {
+  let count = 0;
+  layers.forEach(layer => {
+    if (types.indexOf(layer.type) > -1) {
+      count++;
+    }
+  });
+  return count;
 }
 
 module.exports = pcbStackupZip;
