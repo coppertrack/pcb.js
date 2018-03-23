@@ -11,8 +11,6 @@ function pcbStackupZip(url, options) {
   // default in my experience, the units are currently the gerber units but
   // will always be in mm when pcb-stackup is updated to 4.0.0
   options.outlineGapFill = options.outlineGapFill || 0.05;
-  // we use this id to apply the styles
-  options.id = "pcb-stackup";
   return superagent
     .get(url)
     .set("accept", "application/zip")
