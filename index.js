@@ -49,7 +49,6 @@ function pcbStackupZip(url, options) {
               "bcu",
               "tcu",
             ]);
-
             return resolve({
               board_width,
               board_length,
@@ -69,13 +68,13 @@ const colorMap = {
     hasl: "silver",
   },
   solderMask: {
-    red: "rgba(139,   0,   0, 0.90)",
-    orange: "rgba(195, 107,   0, 0.90)",
+    red: "rgba(139, 0, 0, 0.90)",
+    orange: "rgba(195, 107, 0, 0.90)",
     yellow: "rgba(255, 255, 102, 0.50)",
-    green: "rgba(  0,  68,   0, 0.90)",
-    blue: "rgba(  0,  30, 104, 0.90)",
-    purple: "rgba( 46,   0,  81, 0.90)",
-    black: "rgba(  0,   0,   0, 0.90)",
+    green: "rgba(0, 68, 0, 0.90)",
+    blue: "rgba(0, 30, 104, 0.90)",
+    purple: "rgba(46, 0, 81, 0.90)",
+    black: "rgba(0, 0, 0, 0.90)",
     white: "rgba(255, 255, 255, 0.90)",
   },
   silkScreen: {
