@@ -3,28 +3,6 @@ const pcbStackup = require("pcb-stackup");
 const superagent = require("superagent");
 const jszip = require("jszip");
 
-function pcbJs(gerbers, options) {
-  options = options || {};
-  // you can use your own style in the color field or solderMask, silkScreen and copperFinish
-  options.color = options.color || getColors(options);
-  // pcb-stackup will fill gaps in the outline but is a bit too strict by
-  // default in my experience, the units are currently the gerber units but
-  // will always be in mm when pcb-stackup is updated to 4.0.0
-  options.outlineGapFill = options.outlineGapFill || 0.05;
-
-  if (gerbers.hasOwnProperty('remote')) {
-    return getZipFileFromUrl(gerbers.remote).then(function (layers) {
-      return stackupGerbers(layers, options);
-    });
-  }
-
-  if (gerbers.hasOwnProperty('local')) {
-    return stackupZip(gerbers.local).then(function (layers) {
-      return stackupGerbers(layers, options);
-    });
-  }
-}
-
 const colorMap = {
   copperFinish: {
     bare: "#C87533",
@@ -51,6 +29,28 @@ const colorMap = {
     white: "white",
   },
 };
+
+function pcbJs(gerbers, options) {
+  options = options || {};
+  // you can use your own style in the color field or solderMask, silkScreen and copperFinish
+  options.color = options.color || getColors(options);
+  // pcb-stackup will fill gaps in the outline but is a bit too strict by
+  // default in my experience, the units are currently the gerber units but
+  // will always be in mm when pcb-stackup is updated to 4.0.0
+  options.outlineGapFill = options.outlineGapFill || 0.05;
+
+  if (gerbers.hasOwnProperty('remote')) {
+    return getZipFileFromUrl(gerbers.remote).then(function (layers) {
+      return stackupGerbers(layers, options);
+    });
+  }
+
+  if (gerbers.hasOwnProperty('local')) {
+    return stackupZip(gerbers.local).then(function (layers) {
+      return stackupGerbers(layers, options);
+    });
+  }
+}
 
 function getZipFileFromUrl(url) {
   return superagent
