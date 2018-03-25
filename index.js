@@ -40,7 +40,9 @@ function pcbJs(gerbers, options) {
   options.outlineGapFill = options.outlineGapFill || 0.05;
 
   if (gerbers.hasOwnProperty('remote')) {
-    return getZipFileFromUrl(gerbers.remote).then(function (layers) {
+    return getZipFileFromUrl(gerbers.remote).then(function (zip) {
+      return stackupZip(zip)
+    }).then(function (layers) {
       return stackupGerbers(layers, options);
     });
   }
@@ -59,7 +61,6 @@ function getZipFileFromUrl(url) {
     .responseType("blob")
     .buffer()
     .then(r => r.body)
-    .then(stackupZip);
 }
 
 function stackupZip(zip) {
