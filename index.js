@@ -3,7 +3,7 @@ const pcbStackup = require("pcb-stackup");
 const superagent = require("superagent");
 const jszip = require("jszip");
 
-function pcbStackupZip(url, options) {
+function pcbJs(url, options) {
   options = options || {};
   // you can use your own style in the color field or solderMask, silkScreen and copperFinish
   options.color = options.color || getColors(options);
@@ -126,4 +126,4 @@ function countLayers(layers, types) {
   return count;
 }
 
-module.exports = pcbStackupZip;
+module.exports = pcbJs;

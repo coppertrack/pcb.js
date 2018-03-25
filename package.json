@@ -1,8 +1,8 @@
 {
-  "name": "pcb-stackup-zip",
-  "version": "0.0.0",
+  "name": "pcb.js",
+  "version": "0.0.1",
   "main": "index.js",
-  "license": "MIT",
+  "license": "Apache-2",
   "private": true,
   "dependencies": {
     "babel-polyfill": "^6.26.0",
