@@ -3,3 +3,5 @@ top.svg
 bottom.svg
 .cache
 yarn-error.log
+dist/
+package-lock.json
