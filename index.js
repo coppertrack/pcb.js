@@ -3,7 +3,7 @@ const pcbStackup = require("pcb-stackup");
 const superagent = require("superagent");
 const jszip = require("jszip");
 
-function pcbJs(url, options) {
+function pcbJs(gerbers, options) {
   options = options || {};
   // you can use your own style in the color field or solderMask, silkScreen and copperFinish
   options.color = options.color || getColors(options);
@@ -12,8 +12,17 @@ function pcbJs(url, options) {
   // will always be in mm when pcb-stackup is updated to 4.0.0
   options.outlineGapFill = options.outlineGapFill || 0.05;
 
-  // This is the current default, allow for other options in the future
-  return getZipFileFromUrl(url).then(layers => stackupGerbers(layers, options));
+  if (gerbers.hasOwnProperty('remote')) {
+    return getZipFileFromUrl(gerbers.remote).then(function (layers) {
+      return stackupGerbers(layers, options);
+    });
+  }
+
+  if (gerbers.hasOwnProperty('local')) {
+    return stackupZip(gerbers.local).then(function (layers) {
+      return stackupGerbers(layers, options);
+    });
+  }
 }
 
 const colorMap = {

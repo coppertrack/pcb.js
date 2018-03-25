@@ -26,7 +26,9 @@
       var url = 'gerbers.zip';
 
       // Set up a circuitboard
-      var circuitboard = pcbjs(url, {
+      var circuitboard = pcbjs({
+        remote: url
+      }, {
         solderMask: "blue",
         silkScreen: "white",
         copperFinish: "gold",
