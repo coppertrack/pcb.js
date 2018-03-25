@@ -1,3 +1,4 @@
+const polyfill = require("babel-polyfill");
 const pcbStackup = require("pcb-stackup");
 const superagent = require("superagent");
 const jszip = require("jszip");
