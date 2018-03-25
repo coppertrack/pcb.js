@@ -11,54 +11,9 @@ function pcbJs(url, options) {
   // default in my experience, the units are currently the gerber units but
   // will always be in mm when pcb-stackup is updated to 4.0.0
   options.outlineGapFill = options.outlineGapFill || 0.05;
-  return superagent
-    .get(url)
-    .set("accept", "application/zip")
-    .responseType("blob")
-    .buffer()
-    .then(r => r.body)
-    .then(jszip.loadAsync)
-    .then(zip => {
-      const files = [];
-      zip.forEach((path, file) => {
-        if (!file.dir) {
-          files.push(
-            file
-              .async("text")
-              .then(contents => ({ gerber: contents, filename: path }))
-          );
-        }
-      });
-      return Promise.all(files);
-    })
-    .then(
-      layers =>
-        new Promise((resolve, reject) => {
-          pcbStackup(layers, options, (err, stackup) => {
-            if (err) {
-              return reject(err);
-            }
-            let board_width = stackup.top.width;
-            let board_length = stackup.top.height;
-            // Convert to mm
-            if (stackup.top.units == "in") {
-              board_width = board_width * 25.4;
-              board_length = board_length * 25.4;
-            }
-            const board_layers = countLayers(stackup.layers, [
-              "icu",
-              "bcu",
-              "tcu",
-            ]);
-            return resolve({
-              board_width,
-              board_length,
-              board_layers,
-              stackup,
-            });
-          });
-        })
-    );
+
+  // This is the current default, allow for other options in the future
+  return getZipFileFromUrl(url).then(layers => stackupGerbers(layers, options));
 }
 
 const colorMap = {
@@ -87,6 +42,61 @@ const colorMap = {
     white: "white",
   },
 };
+
+function getZipFileFromUrl(url) {
+  return superagent
+    .get(url)
+    .set("accept", "application/zip")
+    .responseType("blob")
+    .buffer()
+    .then(r => r.body)
+    .then(stackupZip);
+}
+
+function stackupZip(zip) {
+  return jszip.loadAsync(zip)
+    .then(zip => {
+      const files = [];
+      zip.forEach((path, file) => {
+        if (!file.dir) {
+          files.push(
+            file
+              .async("text")
+              .then(contents => ({ gerber: contents, filename: path }))
+          );
+        }
+      });
+      return Promise.all(files);
+    })
+}
+
+function stackupGerbers(layers, options) {
+  return new Promise((resolve, reject) => {
+    pcbStackup(layers, options, (err, stackup) => {
+      if (err) {
+        return reject(err);
+      }
+      let board_width = stackup.top.width;
+      let board_length = stackup.top.height;
+      // Convert to mm
+      if (stackup.top.units == "in") {
+        board_width = board_width * 25.4;
+        board_length = board_length * 25.4;
+      }
+      const board_layers = countLayers(stackup.layers, [
+        "icu",
+        "bcu",
+        "tcu",
+      ]);
+      return resolve({
+        board_width,
+        board_length,
+        board_layers,
+        stackup,
+      });
+    });
+  })
+}
 
 // turn color options into a pcb stackup color options
 function getColors(options) {
