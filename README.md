@@ -15,3 +15,9 @@ npm install
 # or
 ./test http...
 ```
+
+# Todo
+
+* Error handling;
+* Set SVG minimum width or height;
+* Integration tests in Travis;

@@ -8,7 +8,9 @@ const url =
 
 console.log(`fetching ${url}`);
 
-pcbStackupZip(url, {
+pcbStackupZip({
+  remote: url
+}, {
   solderMask: "white",
   silkScreen: "black",
   copperFinish: "gold",
