@@ -4,5 +4,5 @@ bottom.svg
 .cache
 yarn-error.log
 yarn.lock
-dist/
+dist/*.js
 package-lock.json
