@@ -86,18 +86,32 @@ function stackupGerbers(layers, options) {
       if (err) {
         return reject(err);
       }
-      let board_width = stackup.top.width;
-      let board_length = stackup.top.height;
-      // Convert to mm
-      if (stackup.top.units == "in") {
-        board_width = board_width * 25.4;
-        board_length = board_length * 25.4;
+
+      // If we were unable to calculate the width and height something is wrong
+      if (stackup.top.width == 0 || stackup.top.height == 0) {
+        return reject(new Error('No outline found'));
       }
+
       const board_layers = countLayers(stackup.layers, [
         "icu",
         "bcu",
         "tcu",
       ]);
+
+      // If we were unable to count the number of layers something is wrong
+      if (board_layers == 0) {
+        return reject(new Error('No layers found'));
+      }
+
+      let board_width = stackup.top.width;
+      let board_length = stackup.top.height;
+
+      // Convert to mm
+      if (stackup.top.units == "in") {
+        board_width = board_width * 25.4;
+        board_length = board_length * 25.4;
+      }
+
       return resolve({
         board_width,
         board_length,
