@@ -62,6 +62,46 @@ ss    | id + `_ss`  | `.my-board_ss {color: #fff;}`
 sp    | id + `_sp`  | `.my-board_sp {color: #999;}`
 out   | id + `_out` | `.my-board_out {color: #000;}`
 
+### Element rotation
+
+The following javascript function can help to rotate and/or scale an
+svg-element in the browser. This uses jQuery.
+
+```javascript
+function scaleAndRotate(el, max_width, width, length) {
+  var multiplier = max_width / width;
+  var max_length = length * multiplier;
+
+  el.attr('preserveAspectRatio', 'none');
+  el.css({
+    'width': max_width + 'px',
+    'height': max_length + 'px',
+  });
+
+  if (length > width) {
+    // Recalculate multiplier
+    var multiplier = max_width / length;
+    var max_length = width * multiplier;
+
+    el.css({
+      'transform': 'translateX(-100%) rotate(-90deg)',
+      'transform-origin': 'top right',
+      'width': max_length + 'px',
+      'height': max_width + 'px',
+    });
+    el.parent().css({
+      'height': el.width() + 'px',
+    })
+  }
+}
+```
+
+Usage:
+
+```javascript
+scaleAndRotate($('#element'), 600, board_width, board_length);
+```
+
 ## API
 
 ## pcbjs(config, [options]): `function`
