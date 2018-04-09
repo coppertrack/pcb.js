@@ -20,16 +20,30 @@ This will create pcb.js in the `dist` folder.
 
 ## Usage
 
-```
+```javascript
 var gerbers = { remote: url };
 var options = { id: 'my-board' };
 var circuitboard = pcbjs(gerbers, options).then(function process(pcb) {
   // pcb contains board_layers, board_width, board_length and the pcb-stackup
   // object, e.g. pcb.stackup.top.svg.
-}
+}).catch(function(error) {
+  console.error(error)
+});
 ```
 
 Choosing your own id helps when styling the output with css.
+
+## Error handling
+
+Errors are part of the Promise return by `pcbjs`. For example:
+
+```javascript
+.catch(function(error) {
+  if (error.message.match(/End of data reached/g)) {
+    console.error('Incorrect zip file')
+  }
+});
+```
 
 ## Styling
 
