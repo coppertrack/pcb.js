@@ -3,56 +3,108 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>pcb.js example</title>
+
+    <script src="../dist/pcb.js"></script>
+    <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
+
+    <style>
+    .circuitboard_sm {
+      color: rgba(0, 30, 104, 0.90);
+    }
+    </style>
+
   </head>
   <body>
     <p>
       This example assumes you have created dist/pcb.js by running `npm run
       build-dist`.
     </p>
+    <div id="change-style">
+      <input type="file" id="f">
 
-    <input type="file" id="f">
+      Soldermask
+      <select id="soldermask">
+        <option value="rgba(0, 30, 104, 0.90)">blue</option>
+        <option value="rgba(0, 68, 0, 0.90)">green</option>
+        <option value="rgba(139, 0, 0, 0.90)">red</option>
+      </select>
+
+      Silkscreen
+      <select id="silkscreen">
+        <option value="white">white</option>
+        <option value="black">black</option>
+      </select>
+
+      Finish
+      <select id="finish">
+        <option value="goldenrod">enig</option>
+        <option value="silver">lf-hasl</option>
+      </select>
+
+      <script>
+        $('#soldermask').change(function () {
+          $('svg .circuitboard_sm').css('color', $('#soldermask').val());
+        });
+
+        $('#silkscreen').change(function () {
+          $('svg .circuitboard_ss').css('color', $('#silkscreen').val());
+        });
+
+        $('#finish').change(function () {
+          $('svg .circuitboard_cf').css('color', $('#finish').val());
+        });
+      </script>
+    </div>
 
     <div id="loading"></div>
+
     <div id="board-details"></div>
-    <div id="board-view"></div>
+    <div id="board-view-top"></div>
+    <div id="board-view-bottom"></div>
 
-    <script src="../dist/pcb.js"></script>
     <script>
-      // Start loading the circuit board
-      var loading = document.getElementById('loading');
-      var details = document.getElementById('board-details');
-      var view    = document.getElementById('board-view');
 
-      // This is a custom function that uses the file that is uploaded by
-      // the user through a form.
-      document.getElementById('f').onchange = function() {
-        file = this.files[0]
+    document.getElementById('f').onchange = function() {
+      file = this.files[0]
 
-        loading.innerHTML = 'Please hold on ' +
-                            'while we\'re fetching your board details..';
+      var loading = $('#loading');
 
-        // Set up a circuitboard
-        var circuitboard = pcbjs({
-          local: file
-        }, {
-          solderMask: "green",
-          silkScreen: "white",
-          copperFinish: "gold",
-          maskWithOutline: true
-        }).then(function process(pcb) {
-          var board_layers = pcb.board_layers;
-          var board_width  = pcb.board_width;
-          var board_length = pcb.board_length;
+      loading.html('Please hold on ' +
+                    'while we\'re fetching your board details..');
 
-          // Change DOM elements
-          loading.style.display = 'none';
-          details.innerHTML = board_layers + ' layers, board size: ' +
-                              board_width + 'x' + board_length + 'mm';
+      // Set the url and get the gerber file
+      var url = 'safeline.zip';
 
-          // Add svg
-          view.innerHTML = pcb.stackup.top.svg + pcb.stackup.bottom.svg;
-        });
-      }
+      // Set up a circuitboard
+      var circuitboard = pcbjs({
+        local: file
+      }, {
+        id: "circuitboard",
+        solderMask: "blue",
+        silkScreen: "white",
+        copperFinish: "gold",
+        maskWithOutline: false
+      }).then(function process(pcb) {
+        var board_layers = pcb.board_layers;
+        var board_width  = pcb.board_width;
+        var board_length = pcb.board_length;
+
+        console.log('PCB loaded');
+
+        // // Change DOM elements
+        // loading.hide();
+        //
+        // // Show pcb details
+        $('#board-details').html(board_layers + ' layers, board size: ' +
+                                 board_width + 'x' + board_length + 'mm')
+
+        console.log(pcb.stackup.top.svg.length);
+
+        // Add svg and scale / rotate them
+        $('#board-view-top').html(pcb.stackup.top.svg);
+        $('#board-view-bottom').html(pcb.stackup.bottom.svg);
+      });
+    }
 
     </script>
   </body>

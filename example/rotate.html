@@ -95,6 +95,9 @@
         $('#board-view-top').html(pcb.stackup.top.svg);
         $('#board-view-bottom').html(pcb.stackup.bottom.svg);
 
+        scaleAndRotate($('#circuitboard_top'), 600, board_width, board_length);
+        scaleAndRotate($('#circuitboard_bottom'), 600, board_width, board_length);
+
         console.log('Done')
 
       }).catch(function(error) {
@@ -113,6 +116,33 @@
           console.log('Unable to download file from remote source.')
         }
       });
+
+      function scaleAndRotate(el, max_width, width, length) {
+        var multiplier = max_width / width;
+        var max_length = length * multiplier;
+
+        el.attr('preserveAspectRatio', 'none');
+        el.css({
+          'width': max_width + 'px',
+          'height': max_length + 'px',
+        });
+
+        if (length > width) {
+          // Recalculate multiplier
+          var multiplier = max_width / length;
+          var max_length = width * multiplier;
+
+          el.css({
+            'transform': 'translateX(-100%) rotate(-90deg)',
+            'transform-origin': 'top right',
+            'width': max_length + 'px',
+            'height': max_width + 'px',
+          });
+          el.parent().css({
+            'height': el.width() + 'px',
+          })
+        }
+      }
 
     </script>
   </body>
