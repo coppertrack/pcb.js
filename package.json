@@ -8,7 +8,8 @@
     "babel-polyfill": "^6.26.0",
     "jszip": "^3.1.5",
     "pcb-stackup": "^3.0.0",
-    "superagent": "^3.8.2"
+    "superagent": "^3.8.2",
+    "uglify-js": "^3.3.22"
   },
   "devDependencies": {
     "babel-core": "^6.26.0",
@@ -19,7 +20,7 @@
     "prettier": "^1.11.1"
   },
   "scripts": {
-    "build-dist": "browserify index.js -t babelify -s pcbjs > dist/pcb.js",
+    "build-dist": "browserify index.js -t babelify -s pcbjs > dist/pcb.js && cat dist/pcb.js | uglifyjs -m -c > dist/pcb.min.js",
     "dev-server": "http-server -p 8000 ./"
   }
 }
