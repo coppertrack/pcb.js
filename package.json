@@ -19,7 +19,7 @@
     "uglify-js": "^3.3.22"
   },
   "scripts": {
-    "build-dist": "browserify index.js -t babelify -s pcbjs > dist/pcb.js && cat dist/pcb.js | uglifyjs -m -c > dist/pcb.min.js",
+    "build-dist": "browserify index.js -t babelify -s pcbjs > dist/pcb.js && cat dist/pcb.js | uglifyjs -m -c --source-map --output dist/pcb.min.js",
     "dev-server": "http-server -p 8000 ./"
   }
 }
