@@ -4,6 +4,5 @@ bottom.svg
 .cache
 yarn-error.log
 yarn.lock
-dist/*.js
 package-lock.json
 .DS_Store
