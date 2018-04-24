@@ -2,6 +2,7 @@ const polyfill = require("babel-polyfill");
 const pcbStackup = require("pcb-stackup");
 const superagent = require("superagent");
 const jszip = require("jszip");
+const whatsThatGerber = require('whats-that-gerber')
 
 const colorMap = {
   copperFinish: {
@@ -69,10 +70,17 @@ function stackupZip(zip) {
       const files = [];
       zip.forEach((path, file) => {
         if (!file.dir) {
+          const layerType = whatsThatGerber(file)
           files.push(
             file
               .async("text")
-              .then(contents => ({ gerber: contents, filename: path }))
+              .then(contents => ({
+                gerber: contents,
+                filename: path,
+                options: {
+                  filetype: (layerType === 'drl') ? 'drill' : 'gerber'
+                }
+              }))
           );
         }
       });
