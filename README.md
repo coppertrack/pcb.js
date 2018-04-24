@@ -104,3 +104,4 @@ Our releases are created with the help of git-flow.
 4. Commit all changes.
 5. Finish the release with `git flow release finish <VERSION>`.
 6. Push to develop and master and include any tags.
+7. Publish the package to npm with `npm publish --access public`.
