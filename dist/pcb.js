@@ -3,8 +3,10 @@
 
 var polyfill = require("babel-polyfill");
 var pcbStackup = require("pcb-stackup");
+var gerberParser = require('gerber-parser');
 var superagent = require("superagent");
 var jszip = require("jszip");
+var whatsThatGerber = require('whats-that-gerber');
 
 var colorMap = {
   copperFinish: {
@@ -68,8 +70,15 @@ function stackupZip(zip) {
     var files = [];
     zip.forEach(function (path, file) {
       if (!file.dir) {
+        var layerType = whatsThatGerber(path);
         files.push(file.async("text").then(function (contents) {
-          return { gerber: contents, filename: path };
+          return {
+            gerber: contents,
+            filename: path,
+            options: {
+              filetype: layerType === 'drl' ? 'drill' : 'gerber'
+            }
+          };
         }));
       }
     });
@@ -79,39 +88,75 @@ function stackupZip(zip) {
 
 function stackupGerbers(layers, options) {
   return new Promise(function (resolve, reject) {
-    pcbStackup(layers, options, function (err, stackup) {
-      if (err) {
-        return reject(err);
-      }
+    try {
+      pcbStackup(layers, options, function (err, stackup) {
+        if (err) {
+          return reject(err);
+        }
 
-      // If we were unable to calculate the width and height something is wrong
-      if (stackup.top.width == 0 || stackup.top.height == 0) {
-        return reject(new Error('No outline found'));
-      }
+        // If we were unable to calculate the width and height something is wrong
+        if (stackup.top.width == 0 || stackup.top.height == 0) {
+          return reject(new Error('No outline found'));
+        }
 
-      var board_layers = countLayers(stackup.layers, ["icu", "bcu", "tcu"]);
+        var board_layers = countLayers(stackup.layers, ["icu", "bcu", "tcu"]);
 
-      // If we were unable to count the number of layers something is wrong
-      if (board_layers == 0) {
-        return reject(new Error('No layers found'));
-      }
+        // Create a list of tools
+        var tools = {};
 
-      var board_width = stackup.top.width;
-      var board_length = stackup.top.height;
+        layers.forEach(function (layer) {
+          if (layer['options']['filetype'] === 'drill') {
+            var parser = gerberParser();
+            var commands = parser.parseSync(layer['gerber']);
+            var tooltype = undefined;
 
-      // Convert to mm
-      if (stackup.top.units == "in") {
-        board_width = board_width * 25.4;
-        board_length = board_length * 25.4;
-      }
+            commands.forEach(function (command) {
+              // Create a list of tools
+              if (command['type'] === 'tool') {
+                tools[command['code']] = {
+                  'size': command['tool']['params'][0],
+                  'count': 0
+                };
+              }
 
-      return resolve({
-        board_width: board_width,
-        board_length: board_length,
-        board_layers: board_layers,
-        stackup: stackup
+              // Select the tooltype
+              if (command['type'] === 'set' && command['prop'] === 'tool') {
+                tooltype = command['value'];
+              }
+
+              // As this runs sequential all tools are available in `tools`
+              if (tooltype !== undefined && tools.hasOwnProperty(tooltype)) {
+                tools[tooltype]['count']++;
+              }
+            });
+          }
+        });
+
+        // If we were unable to count the number of layers something is wrong
+        if (board_layers == 0) {
+          return reject(new Error('No layers found'));
+        }
+
+        var board_width = stackup.top.width;
+        var board_length = stackup.top.height;
+
+        // Convert to mm
+        if (stackup.top.units == "in") {
+          board_width = board_width * 25.4;
+          board_length = board_length * 25.4;
+        }
+
+        return resolve({
+          board_width: board_width,
+          board_length: board_length,
+          board_layers: board_layers,
+          tools: tools,
+          stackup: stackup
+        });
       });
-    });
+    } catch (e) {
+      return reject(e);
+    }
   });
 }
 
@@ -155,7 +200,7 @@ function countLayers(layers, types) {
 
 module.exports = pcbJs;
 
-},{"babel-polyfill":2,"jszip":379,"pcb-stackup":459,"superagent":492}],2:[function(require,module,exports){
+},{"babel-polyfill":2,"gerber-parser":345,"jszip":379,"pcb-stackup":460,"superagent":492,"whats-that-gerber":499}],2:[function(require,module,exports){
 (function (global){
 "use strict";
 
@@ -186,7 +231,7 @@ define(String.prototype, "padRight", "".padEnd);
   [][key] && define(Array, key, Function.call.bind([][key]));
 });
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"core-js/fn/regexp/escape":9,"core-js/shim":332,"regenerator-runtime/runtime":476}],3:[function(require,module,exports){
+},{"core-js/fn/regexp/escape":9,"core-js/shim":332,"regenerator-runtime/runtime":477}],3:[function(require,module,exports){
 'use strict'
 
 exports.byteLength = byteLength
@@ -9914,32 +9959,37 @@ function isUndefined(arg) {
 // factories to generate all possible parsed by a gerber command
 'use strict'
 
-var done = function(line) {
+var done = function (line) {
   return {type: 'done', line: line || -1}
 }
 
-var set = function(property, value, line) {
+var set = function (property, value, line) {
   return {type: 'set', line: line || -1, prop: property, value: value}
 }
 
-var level = function(level, value, line) {
+var level = function (level, value, line) {
   return {type: 'level', line: line || -1, level: level, value: value}
 }
 
-var tool = function(code, tool, line) {
+var tool = function (code, tool, line) {
   return {type: 'tool', line: line || -1, code: code, tool: tool}
 }
 
-var op = function(operation, location, line) {
+var op = function (operation, location, line) {
   return {type: 'op', line: line || -1, op: operation, coord: location}
 }
 
-var macro = function(name, blocks, line) {
+var macro = function (name, blocks, line) {
   return {type: 'macro', line: line || -1, name: name, blocks: blocks}
 }
 
 var commandMap = {
-  set: set, done: done, level: level, tool: tool, op: op, macro: macro
+  set: set,
+  done: done,
+  level: level,
+  tool: tool,
+  op: op,
+  macro: macro
 }
 module.exports = commandMap
 
@@ -9947,23 +9997,22 @@ module.exports = commandMap
 // function to determine filetype from a chunk
 'use strict'
 
-var determine = function(chunk, start, LIMIT) {
+var determine = function (chunk, start, LIMIT) {
   var limit = Math.min(LIMIT - start, chunk.length)
   var current = []
   var filetype = null
   var index = -1
 
-  while((!filetype) && (++index < limit)) {
+  while (!filetype && ++index < limit) {
     var c = chunk[index]
     if (c === '\n') {
       if (current.length + index) {
         filetype = 'drill'
         current = []
       }
-    }
-    else {
+    } else {
       current.push(c)
-      if ((c === '*') && (current[0] !== ';')) {
+      if (c === '*' && current[0] !== ';') {
         filetype = 'gerber'
         current = []
       }
@@ -9999,28 +10048,28 @@ var drillMode = require('./_drill-mode')
 var normalize = require('./normalize-coord')
 var parseCoord = require('./parse-coord')
 
-var reALTIUM_HINT = /;FILE_FORMAT=(\d):(\d)/
-var reKI_HINT = /;FORMAT={(.):(.)\/ (absolute|.+)? \/ (metric|inch) \/.+(trailing|leading|decimal|keep)/
+var RE_ALTIUM_HINT = /;FILE_FORMAT=(\d):(\d)/
+var RE_KI_HINT = /;FORMAT={(.):(.)\/ (absolute|.+)? \/ (metric|inch) \/.+(trailing|leading|decimal|keep)/
 
-var reUNITS = /(INCH|METRIC)(?:,([TL])Z)?/
-var reTOOL_DEF = /T0*(\d+)[\S]*C([\d.]+)/
-var reTOOL_SET = /T0*(\d+)(?![\S]*C)/
-var reCOORD = /((?:[XYIJA][+-]?[\d.]+){1,4})(?:G85((?:[XY][+-]?[\d.]+){1,2}))?/
-var reROUTE = /^G0([01235])/
+var RE_UNITS = /(INCH|METRIC)(?:,([TL])Z)?/
+var RE_TOOL_DEF = /T0*(\d+)[\S]*C([\d.]+)/
+var RE_TOOL_SET = /T0*(\d+)(?![\S]*C)/
+var RE_COORD = /((?:[XYIJA][+-]?[\d.]+){1,4})(?:G85((?:[XY][+-]?[\d.]+){1,2}))?/
+var RE_ROUTE = /^G0([01235])/
 
-var setUnits = function(parser, units, line) {
-  var format = (units === 'in') ? [2, 4] : [3, 3]
+var setUnits = function (parser, units, line) {
+  var format = units === 'in' ? [2, 4] : [3, 3]
   if (!parser.format.places) {
     parser.format.places = format
   }
   return parser._push(commands.set('units', units, line))
 }
 
-var parseCommentForFormatHints = function(parser, block, line) {
+var parseCommentForFormatHints = function (parser, block, line) {
   var result = {}
 
-  if (reKI_HINT.test(block)) {
-    var kicadMatch = block.match(reKI_HINT)
+  if (RE_KI_HINT.test(block)) {
+    var kicadMatch = block.match(RE_KI_HINT)
     var leading = Number(kicadMatch[1])
     var trailing = Number(kicadMatch[2])
     var absolute = kicadMatch[3]
@@ -10035,34 +10084,28 @@ var parseCommentForFormatHints = function(parser, block, line) {
     // send backup notation
     if (absolute === 'absolute') {
       parser._push(commands.set('backupNota', 'A', line))
-    }
-    else {
+    } else {
       parser._push(commands.set('backupNota', 'I', line))
     }
 
     // send units
     if (unitSet === 'metric') {
       parser._push(commands.set('backupUnits', 'mm', line))
-    }
-    else {
+    } else {
       parser._push(commands.set('backupUnits', 'in', line))
     }
 
     // set zero suppression
     if (suppressionSet === 'leading' || suppressionSet === 'keep') {
       result.zero = 'L'
-    }
-    else if (suppressionSet === 'trailing') {
+    } else if (suppressionSet === 'trailing') {
       result.zero = 'T'
-    }
-    else {
+    } else {
       result.zero = 'D'
     }
-  }
-
-  // check for altium format hints if the format is not already set
-  else if (reALTIUM_HINT.test(block)) {
-    var altiumMatch = block.match(reALTIUM_HINT)
+  } else if (RE_ALTIUM_HINT.test(block)) {
+    // check for altium format hints if the format is not already set
+    var altiumMatch = block.match(RE_ALTIUM_HINT)
 
     result.places = [Number(altiumMatch[1]), Number(altiumMatch[2])]
   }
@@ -10070,24 +10113,22 @@ var parseCommentForFormatHints = function(parser, block, line) {
   return result
 }
 
-var zeroFromSupression = function(suppression) {
+var zeroFromSupression = function (suppression) {
   if (suppression === 'T') {
     return 'L'
-  }
-  else if (suppression === 'L') {
+  } else if (suppression === 'L') {
     return 'T'
   }
 }
 
-var parseUnits = function(parser, block, line) {
-  var unitsMatch = block.match(reUNITS)
+var parseUnits = function (parser, block, line) {
+  var unitsMatch = block.match(RE_UNITS)
   var units = unitsMatch[1]
   var suppression = unitsMatch[2]
 
   if (units === 'METRIC') {
     setUnits(parser, 'mm', line)
-  }
-  else {
+  } else {
     setUnits(parser, 'in', line)
   }
 
@@ -10096,8 +10137,8 @@ var parseUnits = function(parser, block, line) {
   }
 }
 
-var coordToCommand = function(parser, block, line) {
-  var coordMatch = block.match(reCOORD)
+var coordToCommand = function (parser, block, line) {
+  var coordMatch = block.match(RE_COORD)
   var coord = parseCoord.parse(coordMatch[1], parser.format)
 
   // if there's another match, then it was a slot
@@ -10110,8 +10151,8 @@ var coordToCommand = function(parser, block, line) {
   }
 
   // get the drill mode if a route command is present
-  if (reROUTE.test(block)) {
-    parser._drillMode = block.match(reROUTE)[1]
+  if (RE_ROUTE.test(block)) {
+    parser._drillMode = block.match(RE_ROUTE)[1]
   }
 
   switch (parser._drillMode) {
@@ -10135,9 +10176,9 @@ var coordToCommand = function(parser, block, line) {
   }
 }
 
-var parseBlock = function(parser, block, line) {
-  if (reTOOL_DEF.test(block)) {
-    var toolMatch = block.match(reTOOL_DEF)
+var parseBlock = function (parser, block, line) {
+  if (RE_TOOL_DEF.test(block)) {
+    var toolMatch = block.match(RE_TOOL_DEF)
     var toolCode = toolMatch[1]
     var toolDia = normalize(toolMatch[2])
     var toolDef = {shape: 'circle', params: [toolDia], hole: []}
@@ -10146,16 +10187,15 @@ var parseBlock = function(parser, block, line) {
   }
 
   // tool set
-  if (reTOOL_SET.test(block)) {
-    var toolSet = block.match(reTOOL_SET)[1]
+  if (RE_TOOL_SET.test(block)) {
+    var toolSet = block.match(RE_TOOL_SET)[1]
 
     // allow tool set to fall through because it can happen on the
     // same line as a coordinate operation
     parser._push(commands.set('tool', toolSet, line))
   }
 
-  if (reCOORD.test(block)) {
-
+  if (RE_COORD.test(block)) {
     if (!parser.format.places) {
       parser.format.places = [2, 4]
       parser._warn('places format missing; assuming [2, 4]')
@@ -10164,7 +10204,7 @@ var parseBlock = function(parser, block, line) {
     return coordToCommand(parser, block, line)
   }
 
-  if ((block === 'M00') || (block === 'M30')) {
+  if (block === 'M00' || block === 'M30') {
     return parser._push(commands.done(line))
   }
 
@@ -10184,20 +10224,20 @@ var parseBlock = function(parser, block, line) {
     return parser._push(commands.set('nota', 'I', line))
   }
 
-  if (reUNITS.test(block)) {
+  if (RE_UNITS.test(block)) {
     return parseUnits(parser, block, line)
   }
-
-  return
 }
 
-var flush = function(parser) {
+var flush = function (parser) {
   if (parser._drillStash.length) {
-    parser._drillStash.forEach(function(data) {
-      if (!parser.format.zero && reCOORD.test(data.block)) {
+    parser._drillStash.forEach(function (data) {
+      if (!parser.format.zero && RE_COORD.test(data.block)) {
         parser.format.zero = 'T'
-        parser._warn('zero suppression missing and not detectable;'
-          + ' assuming trailing suppression')
+        parser._warn(
+          'zero suppression missing and not detectable;' +
+            ' assuming trailing suppression'
+        )
       }
       parseBlock(parser, data.block, data.line)
     })
@@ -10205,7 +10245,7 @@ var flush = function(parser) {
   }
 }
 
-var parse = function(parser, block) {
+var parse = function (parser, block) {
   parser._drillStash = parser._drillStash || []
 
   // parse comments for formatting hints and ignore the rest
@@ -10213,7 +10253,7 @@ var parse = function(parser, block) {
     // check for kicad format hints
     var formatHints = parseCommentForFormatHints(parser, block, parser.line)
 
-    Object.keys(formatHints).forEach(function(key) {
+    Object.keys(formatHints).forEach(function (key) {
       if (!parser.format[key]) {
         parser.format[key] = formatHints[key]
       }
@@ -10228,18 +10268,18 @@ var parse = function(parser, block) {
       flush(parser)
       return parseBlock(parser, block, parser.line)
     }
-    if (reCOORD.test(block)) {
+    if (RE_COORD.test(block)) {
       parser.format.zero = parseCoord.detectZero(block)
       if (parser.format.zero) {
         var zero = parser.format.zero === 'L' ? 'leading' : 'trailing'
-        parser._warn('zero suppression missing; detected '
-          + zero + ' suppression')
+        parser._warn(
+          'zero suppression missing; detected ' + zero + ' suppression'
+        )
         flush(parser)
         return parseBlock(parser, block, parser.line)
       }
-    }
-    else if (reUNITS.test(block)) {
-      var unitsMatch = block.match(reUNITS)
+    } else if (RE_UNITS.test(block)) {
+      var unitsMatch = block.match(RE_UNITS)
       var suppression = unitsMatch[2]
       parser.format.zero = zeroFromSupression(suppression)
       if (parser.format.zero) {
@@ -10267,35 +10307,35 @@ var parseCoord = require('./parse-coord')
 var parseMacroBlock = require('./_parse-macro-block')
 
 // g-code set matchers
-var reMODE = /^G0*([123])/
-var reREGION = /^G3([67])/
-var reARC = /^G7([45])/
-var reBKP_UNITS = /^G7([01])/
-var reBKP_NOTA = /^G9([01])/
-var reCOMMENT = /^G0*4/
+var RE_MODE = /^G0*([123])/
+var RE_REGION = /^G3([67])/
+var RE_ARC = /^G7([45])/
+var RE_BKP_UNITS = /^G7([01])/
+var RE_BKP_NOTA = /^G9([01])/
+var RE_COMMENT = /^G0*4/
 
 // tool changes
-var reTOOL = /^(?:G54)?D0*([1-9]\d+)/
+var RE_TOOL = /^(?:G54)?D0*([1-9]\d+)/
 
 // operations
-var reOP = /D0*([123])$/
-var reCOORD = /^(?:G0*[123])?((?:[XYIJ][+-]?\d+){1,4})(?:D0*[123])?$/
+var RE_OP = /D0*([123])$/
+var RE_COORD = /^(?:G0*[123])?((?:[XYIJ][+-]?\d+){1,4})(?:D0*[123])?$/
 
 // parameter code matchers
-var reUNITS = /^%MO(IN|MM)/
+var RE_UNITS = /^%MO(IN|MM)/
 // format spec regexp courtesy @summivox
-var reFORMAT = /^%FS([LT]?)([AI]?)(.*)X([0-7])([0-7])Y\4\5/
-var rePOLARITY = /^%LP([CD])/
-var reSTEP_REP = /^%SR(?:X(\d+)Y(\d+)I([\d.]+)J([\d.]+))?/
-var reTOOL_DEF = /^%ADD0*(\d{2,})([A-Za-z_\$][\w\-\.]*)(?:,((?:X?[\d.]+)*))?/
-var reMACRO = /^%AM([A-Za-z_\$][\w\-\.]*)\*?(.*)/
+var RE_FORMAT = /^%FS([LT]?)([AI]?)(.*)X([0-7])([0-7])Y\4\5/
+var RE_POLARITY = /^%LP([CD])/
+var RE_STEP_REP = /^%SR(?:X(\d+)Y(\d+)I([\d.]+)J([\d.]+))?/
+var RE_TOOL_DEF = /^%ADD0*(\d{2,})([A-Za-z_$][\w\-.]*)(?:,((?:X?[\d.]+)*))?/
+var RE_MACRO = /^%AM([A-Za-z_$][\w\-.]*)\*?(.*)/
 
-var parseToolDef = function(parser, block) {
+var parseToolDef = function (parser, block) {
   var format = {places: parser.format.places}
-  var toolMatch = block.match(reTOOL_DEF)
+  var toolMatch = block.match(RE_TOOL_DEF)
   var tool = toolMatch[1]
   var shapeMatch = toolMatch[2]
-  var toolArgs = (toolMatch[3]) ? toolMatch[3].split('X') : []
+  var toolArgs = toolMatch[3] ? toolMatch[3].split('X') : []
 
   // get the shape
   var shape
@@ -10303,20 +10343,16 @@ var parseToolDef = function(parser, block) {
   if (shapeMatch === 'C') {
     shape = 'circle'
     maxArgs = 3
-  }
-  else if (shapeMatch === 'R') {
+  } else if (shapeMatch === 'R') {
     shape = 'rect'
     maxArgs = 4
-  }
-  else if (shapeMatch === 'O') {
+  } else if (shapeMatch === 'O') {
     shape = 'obround'
     maxArgs = 4
-  }
-  else if (shapeMatch === 'P') {
+  } else if (shapeMatch === 'P') {
     shape = 'poly'
     maxArgs = 5
-  }
-  else {
+  } else {
     shape = shapeMatch
     maxArgs = 0
   }
@@ -10324,17 +10360,14 @@ var parseToolDef = function(parser, block) {
   var val
   if (shape === 'circle') {
     val = [normalize(toolArgs[0], format)]
-  }
-  else if (shape === 'rect' || shape === 'obround') {
+  } else if (shape === 'rect' || shape === 'obround') {
     val = [normalize(toolArgs[0], format), normalize(toolArgs[1], format)]
-  }
-  else if (shape === 'poly') {
+  } else if (shape === 'poly') {
     val = [normalize(toolArgs[0], format), Number(toolArgs[1]), 0]
     if (toolArgs[2]) {
       val[2] = Number(toolArgs[2])
     }
-  }
-  else {
+  } else {
     val = toolArgs.map(Number)
   }
 
@@ -10344,30 +10377,29 @@ var parseToolDef = function(parser, block) {
       normalize(toolArgs[maxArgs - 2], format),
       normalize(toolArgs[maxArgs - 1], format)
     ]
-  }
-  else if (toolArgs[maxArgs - 2]) {
+  } else if (toolArgs[maxArgs - 2]) {
     hole = [normalize(toolArgs[maxArgs - 2], format)]
   }
   var toolDef = {shape: shape, params: val, hole: hole}
   return parser._push(commands.tool(tool, toolDef))
 }
 
-var parseMacroDef = function(parser, block) {
-  var macroMatch = block.match(reMACRO)
+var parseMacroDef = function (parser, block) {
+  var macroMatch = block.match(RE_MACRO)
   var name = macroMatch[1]
-  if (name.match(/\-/)) {
-    parser._warn('hyphens in macro name are illegal: ' + name )
+  if (name.match(/-/)) {
+    parser._warn('hyphens in macro name are illegal: ' + name)
   }
-  var blockMatch = (macroMatch[2].length) ? macroMatch[2].split('*') : []
-  var blocks = blockMatch.map(function(block) {
+  var blockMatch = macroMatch[2].length ? macroMatch[2].split('*') : []
+  var blocks = blockMatch.filter(Boolean).map(function (block) {
     return parseMacroBlock(parser, block)
   })
 
   return parser._push(commands.macro(name, blocks))
 }
 
-var parse = function(parser, block) {
-  if (reCOMMENT.test(block)) {
+var parse = function (parser, block) {
+  if (RE_COMMENT.test(block)) {
     return
   }
 
@@ -10375,32 +10407,32 @@ var parse = function(parser, block) {
     return parser._push(commands.done())
   }
 
-  if (reREGION.test(block)) {
-    var regionMatch = block.match(reREGION)[1]
-    var region = (regionMatch === '6') ? true : false
+  if (RE_REGION.test(block)) {
+    var regionMatch = block.match(RE_REGION)[1]
+    var region = regionMatch === '6'
     return parser._push(commands.set('region', region))
   }
 
-  if (reARC.test(block)) {
-    var arcMatch = block.match(reARC)[1]
-    var arc = (arcMatch === '4') ? 's' : 'm'
+  if (RE_ARC.test(block)) {
+    var arcMatch = block.match(RE_ARC)[1]
+    var arc = arcMatch === '4' ? 's' : 'm'
     return parser._push(commands.set('arc', arc))
   }
 
-  if (reUNITS.test(block)) {
-    var unitsMatch = block.match(reUNITS)[1]
-    var units = (unitsMatch === 'IN') ? 'in' : 'mm'
+  if (RE_UNITS.test(block)) {
+    var unitsMatch = block.match(RE_UNITS)[1]
+    var units = unitsMatch === 'IN' ? 'in' : 'mm'
     return parser._push(commands.set('units', units))
   }
 
-  if (reBKP_UNITS.test(block)) {
-    var bkpUnitsMatch = block.match(reBKP_UNITS)[1]
-    var backupUnits = (bkpUnitsMatch === '0') ? 'in' : 'mm'
+  if (RE_BKP_UNITS.test(block)) {
+    var bkpUnitsMatch = block.match(RE_BKP_UNITS)[1]
+    var backupUnits = bkpUnitsMatch === '0' ? 'in' : 'mm'
     return parser._push(commands.set('backupUnits', backupUnits))
   }
 
-  if (reFORMAT.test(block)) {
-    var formatMatch = block.match(reFORMAT)
+  if (RE_FORMAT.test(block)) {
+    var formatMatch = block.match(RE_FORMAT)
     var zero = formatMatch[1]
     var nota = formatMatch[2]
     var unknown = formatMatch[3]
@@ -10417,14 +10449,15 @@ var parse = function(parser, block) {
     if (!format.zero) {
       format.zero = 'L'
       parser._warn('zero suppression missing from format; assuming leading')
-    }
-    else if (format.zero === 'T') {
+    } else if (format.zero === 'T') {
       parser._warn('trailing zero suppression has been deprecated')
     }
 
     // warn if there were unknown characters in the format spec
     if (unknown) {
-      parser._warn('unknown characters "' + unknown + '" in "' + block + '" were ignored')
+      parser._warn(
+        'unknown characters "' + unknown + '" in "' + block + '" were ignored'
+      )
     }
 
     var epsilon = 1.5 * Math.pow(10, -format.places[1])
@@ -10433,19 +10466,19 @@ var parse = function(parser, block) {
     return
   }
 
-  if (reBKP_NOTA.test(block)) {
-    var bkpNotaMatch = block.match(reBKP_NOTA)[1]
-    var backupNota = (bkpNotaMatch === '0') ? 'A' : 'I'
+  if (RE_BKP_NOTA.test(block)) {
+    var bkpNotaMatch = block.match(RE_BKP_NOTA)[1]
+    var backupNota = bkpNotaMatch === '0' ? 'A' : 'I'
     return parser._push(commands.set('backupNota', backupNota))
   }
 
-  if (rePOLARITY.test(block)) {
-    var polarity = block.match(rePOLARITY)[1]
+  if (RE_POLARITY.test(block)) {
+    var polarity = block.match(RE_POLARITY)[1]
     return parser._push(commands.level('polarity', polarity))
   }
 
-  if (reSTEP_REP.test(block)) {
-    var stepRepeatMatch = block.match(reSTEP_REP)
+  if (RE_STEP_REP.test(block)) {
+    var stepRepeatMatch = block.match(RE_STEP_REP)
     var x = stepRepeatMatch[1] || 1
     var y = stepRepeatMatch[2] || 1
     var i = stepRepeatMatch[3] || 0
@@ -10454,35 +10487,33 @@ var parse = function(parser, block) {
     return parser._push(commands.level('stepRep', sr))
   }
 
-  if (reTOOL.test(block)) {
-    var tool = block.match(reTOOL)[1]
+  if (RE_TOOL.test(block)) {
+    var tool = block.match(RE_TOOL)[1]
     return parser._push(commands.set('tool', tool))
   }
 
-  if (reTOOL_DEF.test(block)) {
+  if (RE_TOOL_DEF.test(block)) {
     return parseToolDef(parser, block)
   }
 
-  if (reMACRO.test(block)) {
+  if (RE_MACRO.test(block)) {
     return parseMacroDef(parser, block)
   }
 
   // finally, look for mode commands and operations
   // they may appear in the same block
-  if (reOP.test(block) || reMODE.test(block) || reCOORD.test(block)) {
-    var opMatch = block.match(reOP)
-    var modeMatch = block.match(reMODE)
-    var coordMatch = block.match(reCOORD)
+  if (RE_OP.test(block) || RE_MODE.test(block) || RE_COORD.test(block)) {
+    var opMatch = block.match(RE_OP)
+    var modeMatch = block.match(RE_MODE)
+    var coordMatch = block.match(RE_COORD)
     var mode
 
     if (modeMatch) {
       if (modeMatch[1] === '1') {
         mode = 'i'
-      }
-      else if (modeMatch[1] === '2') {
+      } else if (modeMatch[1] === '2') {
         mode = 'cw'
-      }
-      else {
+      } else {
         mode = 'ccw'
       }
 
@@ -10490,18 +10521,16 @@ var parse = function(parser, block) {
     }
 
     if (opMatch || coordMatch) {
-      var opCode = (opMatch) ? opMatch[1] : ''
-      var coordString = (coordMatch) ? coordMatch[1] : ''
+      var opCode = opMatch ? opMatch[1] : ''
+      var coordString = coordMatch ? coordMatch[1] : ''
       var coord = parseCoord.parse(coordString, parser.format)
 
       var op = 'last'
       if (opCode === '1') {
         op = 'int'
-      }
-      else if (opCode === '2') {
+      } else if (opCode === '2') {
         op = 'move'
-      }
-      else if (opCode === '3') {
+      } else if (opCode === '3') {
         op = 'flash'
       }
 
@@ -10512,7 +10541,9 @@ var parse = function(parser, block) {
   }
 
   // if we reach here the block was unhandled, so warn if it is not empty
-  return parser._warn('block "' + block + '" was not recognized and was ignored')
+  return parser._warn(
+    'block "' + block + '" was not recognized and was ignored'
+  )
 }
 
 module.exports = parse
@@ -10523,23 +10554,23 @@ module.exports = parse
 
 var parseMacroExpr = require('./_parse-macro-expression')
 
-var reNUM = /^-?[\d.]+$/
-var reVAR_DEF = /^(\$[\d+])=(.+)/
+var RE_NUM = /^-?[\d.]+$/
+var RE_VAR_DEF = /^(\$[\d+])=(.+)/
 
-var parseMacroBlock = function(parser, block) {
+var parseMacroBlock = function (parser, block) {
   // check first for a comment
   if (block[0] === '0') {
     return {type: 'comment'}
   }
 
   // variable definition
-  if (reVAR_DEF.test(block)) {
-    var varDefMatch = block.match(reVAR_DEF)
+  if (RE_VAR_DEF.test(block)) {
+    var varDefMatch = block.match(RE_VAR_DEF)
     var varName = varDefMatch[1]
     var varExpr = varDefMatch[2]
     var evaluate = parseMacroExpr(parser, varExpr)
 
-    var setMods = function(mods) {
+    var setMods = function (mods) {
       mods[varName] = evaluate(mods)
 
       return mods
@@ -10548,8 +10579,8 @@ var parseMacroBlock = function(parser, block) {
   }
 
   // map a primitive param to a number or, if an expression, a function
-  var modVal = function(m) {
-    if (reNUM.test(m)) {
+  var modVal = function (m) {
+    if (RE_NUM.test(m)) {
       return Number(m)
     }
     return parseMacroExpr(parser, m)
@@ -10604,7 +10635,9 @@ var parseMacroBlock = function(parser, block) {
   }
 
   if (code === 22) {
-    parser._warn('macro aperture lower-left rectangle primitives are deprecated')
+    parser._warn(
+      'macro aperture lower-left rectangle primitives are deprecated'
+    )
     return {
       type: 'rectLL',
       exp: exp,
@@ -10666,9 +10699,7 @@ var parseMacroBlock = function(parser, block) {
       gap: mods[5],
       rot: mods[6]
     }
-  }
-
-  else {
+  } else {
     parser._warn(code + ' is an unrecognized primitive for a macro aperture')
   }
 }
@@ -10679,26 +10710,25 @@ module.exports = parseMacroBlock
 // parse a macro expression and return a function that takes mods
 'use strict'
 
-var reOP = /[+\-\/xX()]/
-var reNUMBER = /[$\d.]+/
-var reTOKEN = new RegExp([reOP.source, reNUMBER.source].join('|'), 'g')
+var RE_OP = /[+\-/xX()]/
+var RE_NUMBER = /[$\d.]+/
+var RE_TOKEN = new RegExp([RE_OP.source, RE_NUMBER.source].join('|'), 'g')
 
-module.exports = function parseMacroExpression(parser, expr) {
+module.exports = function parseMacroExpression (parser, expr) {
   // tokenize the expression
-  var tokens = expr.match(reTOKEN)
+  var tokens = expr.match(RE_TOKEN)
 
   // forward declare parse expression
   var parseExpression
 
   // primary tokens are numbers and parentheses
-  var parsePrimary = function() {
+  var parsePrimary = function () {
     var t = tokens.shift()
     var exp
 
-    if (reNUMBER.test(t)) {
+    if (RE_NUMBER.test(t)) {
       exp = {type: 'n', val: t}
-    }
-    else {
+    } else {
       exp = parseExpression()
       tokens.shift()
     }
@@ -10706,7 +10736,7 @@ module.exports = function parseMacroExpression(parser, expr) {
   }
 
   // parse multiplication and division tokens
-  var parseMultiplication = function() {
+  var parseMultiplication = function () {
     var exp = parsePrimary()
     var t = tokens[0]
 
@@ -10714,7 +10744,7 @@ module.exports = function parseMacroExpression(parser, expr) {
       parser._warn("multiplication in macros should use 'x', not 'X'")
       t = 'x'
     }
-    while ((t === 'x') || (t === '/')) {
+    while (t === 'x' || t === '/') {
       tokens.shift()
       var right = parsePrimary()
       exp = {type: t, left: exp, right: right}
@@ -10724,10 +10754,10 @@ module.exports = function parseMacroExpression(parser, expr) {
   }
 
   // parse addition and subtraction tokens
-  parseExpression = function() {
+  parseExpression = function () {
     var exp = parseMultiplication()
     var t = tokens[0]
-    while ((t === '+') || (t === '-')) {
+    while (t === '+' || t === '-') {
       tokens.shift()
       var right = parseMultiplication()
       exp = {type: t, left: exp, right: right}
@@ -10740,8 +10770,8 @@ module.exports = function parseMacroExpression(parser, expr) {
   var tree = parseExpression()
 
   // evalute by recursively traversing the tree
-  var evaluate = function(op, mods) {
-    var getValue = function(t) {
+  var evaluate = function (op, mods) {
+    var getValue = function (t) {
       if (t[0] === '$') {
         return Number(mods[t])
       }
@@ -10753,20 +10783,20 @@ module.exports = function parseMacroExpression(parser, expr) {
       return getValue(op.val)
     }
     if (type === '+') {
-      return (evaluate(op.left, mods) + evaluate(op.right, mods))
+      return evaluate(op.left, mods) + evaluate(op.right, mods)
     }
     if (type === '-') {
-      return (evaluate(op.left, mods) - evaluate(op.right, mods))
+      return evaluate(op.left, mods) - evaluate(op.right, mods)
     }
     if (type === 'x') {
-      return (evaluate(op.left, mods) * evaluate(op.right, mods))
+      return evaluate(op.left, mods) * evaluate(op.right, mods)
     }
     // else division
-    return (evaluate(op.left, mods) / evaluate(op.right, mods))
+    return evaluate(op.left, mods) / evaluate(op.right, mods)
   }
 
   // return the evaluation function bound to the parsed expression tree
-  return function(mods) {
+  return function (mods) {
     return evaluate(tree, mods)
   }
 }
@@ -10775,7 +10805,7 @@ module.exports = function parseMacroExpression(parser, expr) {
 // simple warning class to be emitted when something questionable in the gerber is found
 'use strict'
 
-var warning = function(message, line) {
+var warning = function (message, line) {
   return {message: message, line: line}
 }
 
@@ -10786,15 +10816,15 @@ module.exports = warning
 // returns {next: '_', read: [chars read], lines: [lines read]}
 'use strict'
 
-var getNext = function(type, chunk, start) {
+var getNext = function (type, chunk, start) {
   if (type !== 'gerber' && type !== 'drill') {
     throw new Error('filetype to get next block must be "drill" or "gerber"')
   }
 
   // parsing constants
   var limit = chunk.length - start
-  var split = (type === 'gerber') ? '*' : '\n'
-  var param = (type === 'gerber') ? '%' : ''
+  var split = type === 'gerber' ? '*' : '\n'
+  var param = type === 'gerber' ? '%' : ''
 
   // search flags
   var splitFound = false
@@ -10807,7 +10837,7 @@ var getNext = function(type, chunk, start) {
   var read = 0
   var lines = 0
 
-  while ((!blockFound) && (read < limit)) {
+  while (!blockFound && read < limit) {
     var c = chunk[start + read]
 
     // count newlines
@@ -10820,28 +10850,25 @@ var getNext = function(type, chunk, start) {
       if (!paramStarted) {
         paramStarted = true
         found.push(c)
-      }
-      else {
+      } else {
         paramFound = true
         found.pop()
       }
-    }
-    else if (c === split) {
+    } else if (c === split) {
       splitFound = true
       if (paramStarted) {
         found.push(c)
       }
-    }
-    else if ((' ' <= c) && (c <= '~')) {
+    } else if (c >= ' ' && c <= '~') {
       found.push(c)
     }
 
     read++
-    blockFound = (splitFound && ((!paramStarted) || paramFound))
+    blockFound = splitFound && (!paramStarted || paramFound)
   }
 
-  var block = (blockFound) ? found.join('').trim() : ''
-  var rem = (!blockFound) ? found.join('') : ''
+  var block = blockFound ? found.join('').trim() : ''
+  var rem = !blockFound ? found.join('') : ''
   return {lines: lines, read: read, block: block, rem: rem}
 }
 
@@ -10855,39 +10882,40 @@ var isFinite = require('lodash.isfinite')
 
 var Parser = require('./parser')
 
-var verifyPlaces = function(p) {
+var verifyPlaces = function (p) {
   if (
     Array.isArray(p) &&
-    (p.length === 2) &&
-    (isFinite(p[0]) && isFinite(p[1]))) {
+    p.length === 2 &&
+    (isFinite(p[0]) && isFinite(p[1]))
+  ) {
     return p
   }
 
   throw new Error('places must be an array of two whole numbers')
 }
 
-var verifyZero = function(z) {
-  if ((z === 'T') || (z === 'L')) {
+var verifyZero = function (z) {
+  if (z === 'T' || z === 'L') {
     return z
   }
 
   throw new Error("zero suppression must be 'L' or 'T'")
 }
 
-var verifyFiletype = function(f) {
-  if ((f === 'gerber') || (f === 'drill')) {
+var verifyFiletype = function (f) {
+  if (f === 'gerber' || f === 'drill') {
     return f
   }
 
   throw new Error('filetype must be "drill" or "gerber"')
 }
 
-module.exports = function(options) {
+module.exports = function (options) {
   options = options || {}
 
-  var places = (options.places) ? verifyPlaces(options.places) : null
-  var zero = (options.zero) ? verifyZero(options.zero) : null
-  var filetype = (options.filetype) ? verifyFiletype(options.filetype) : null
+  var places = options.places ? verifyPlaces(options.places) : null
+  var zero = options.zero ? verifyZero(options.zero) : null
+  var filetype = options.filetype ? verifyFiletype(options.filetype) : null
 
   return new Parser(places, zero, filetype)
 }
@@ -10902,7 +10930,7 @@ var padLeft = require('lodash.padleft')
 var padRight = require('lodash.padright')
 
 // function takes in the number string to be converted and the format object
-var normalizeCoord = function(number, format) {
+var normalizeCoord = function (number, format) {
   // make sure we're dealing with a string
   if (number == null) {
     return NaN
@@ -10912,20 +10940,18 @@ var normalizeCoord = function(number, format) {
 
   // pull out the sign and get the before and after segments ready
   var sign = '+'
-  if ((numberString[0] === '-') || (numberString[0] === '+')) {
+  if (numberString[0] === '-' || numberString[0] === '+') {
     sign = numberString[0]
     numberString = numberString.slice(1)
   }
 
   // check if the number has a decimal point or has been explicitely flagged
   // if it does, just split by the decimal point to get leading and trailing
-  var hasDecimal = (numberString.indexOf('.') !== -1)
-  if (hasDecimal || (format == null) || (format.zero == null)) {
+  var hasDecimal = numberString.indexOf('.') !== -1
+  if (hasDecimal || format == null || format.zero == null) {
     return Number(sign + numberString)
-  }
-
-  // otherwise we need to use the number format to split up the string
-  else {
+  } else {
+    // otherwise we need to use the number format to split up the string
     // make sure format is valid
     if (format.places == null || format.places.length !== 2) {
       return NaN
@@ -10940,11 +10966,9 @@ var normalizeCoord = function(number, format) {
     // pad according to trailing or leading zero suppression
     if (format.zero === 'T') {
       numberString = padRight(numberString, leading + trailing, '0')
-    }
-    else if (format.zero === 'L') {
+    } else if (format.zero === 'L') {
       numberString = padLeft(numberString, leading + trailing, '0')
-    }
-    else {
+    } else {
       return NaN
     }
   }
@@ -10969,24 +10993,24 @@ var normalize = require('./normalize-coord')
 var RE_TRAILING = /[XY]0\d+/
 var RE_LEADING = /[XY]\d+0(?=\D|$)/
 var MATCH = [
-  {coord: 'x', test: /X([+-]?[\d\.]+)/},
-  {coord: 'y', test: /Y([+-]?[\d\.]+)/},
-  {coord: 'i', test: /I([+-]?[\d\.]+)/},
-  {coord: 'j', test: /J([+-]?[\d\.]+)/},
-  {coord: 'a', test: /A([\d\.]+)/}
+  {coord: 'x', test: /X([+-]?[\d.]+)/},
+  {coord: 'y', test: /Y([+-]?[\d.]+)/},
+  {coord: 'i', test: /I([+-]?[\d.]+)/},
+  {coord: 'j', test: /J([+-]?[\d.]+)/},
+  {coord: 'a', test: /A([\d.]+)/}
 ]
 
-var parse = function(coord, format) {
+var parse = function (coord, format) {
   if (coord == null) {
     return {}
   }
 
-  if ((format.zero == null) || (format.places == null)) {
+  if (format.zero == null || format.places == null) {
     throw new Error('cannot parse coordinate with format undefined')
   }
 
   // pull out the x, y, i, and j
-  var parsed = MATCH.reduce(function(result, matcher) {
+  var parsed = MATCH.reduce(function (result, matcher) {
     var coordMatch = coord.match(matcher.test)
 
     if (coordMatch) {
@@ -10999,7 +11023,7 @@ var parse = function(coord, format) {
   return parsed
 }
 
-var detectZero = function(coord) {
+var detectZero = function (coord) {
   if (RE_LEADING.test(coord)) {
     return 'L'
   }
@@ -11030,7 +11054,7 @@ var drillMode = require('./_drill-mode')
 
 var LIMIT = 65535
 
-var Parser = function(places, zero, filetype) {
+var Parser = function (places, zero, filetype) {
   Transform.call(this, {readableObjectMode: true})
 
   // parser properties
@@ -11045,7 +11069,7 @@ var Parser = function(places, zero, filetype) {
 
 inherits(Parser, Transform)
 
-Parser.prototype._process = function(chunk, filetype) {
+Parser.prototype._process = function (chunk, filetype) {
   while (this._index < chunk.length) {
     var next = getNext(filetype, chunk, this._index)
     this._index += next.read
@@ -11055,15 +11079,14 @@ Parser.prototype._process = function(chunk, filetype) {
     if (next.block) {
       if (filetype === 'gerber') {
         parseGerber(this, next.block)
-      }
-      else {
+      } else {
         parseDrill.parse(this, next.block)
       }
     }
   }
 }
 
-Parser.prototype._transform = function(chunk, encoding, done) {
+Parser.prototype._transform = function (chunk, encoding, done) {
   var filetype = this.format.filetype
 
   // decode buffer to string
@@ -11080,8 +11103,7 @@ Parser.prototype._transform = function(chunk, encoding, done) {
       }
       this._stash += chunk
       return done()
-    }
-    else {
+    } else {
       this.format.filetype = filetype
       this._index = 0
     }
@@ -11096,7 +11118,7 @@ Parser.prototype._transform = function(chunk, encoding, done) {
   done()
 }
 
-Parser.prototype._flush = function(done) {
+Parser.prototype._flush = function (done) {
   if (this.format.filetype === 'drill') {
     parseDrill.flush(this)
   }
@@ -11104,20 +11126,20 @@ Parser.prototype._flush = function(done) {
   return done && done()
 }
 
-Parser.prototype._push = function(data) {
+Parser.prototype._push = function (data) {
   if (data.line === -1) {
     data.line = this.line
   }
 
-  var pushTarget = (!this._syncResult) ? this : this._syncResult
+  var pushTarget = !this._syncResult ? this : this._syncResult
   pushTarget.push(data)
 }
 
-Parser.prototype._warn = function(message) {
+Parser.prototype._warn = function (message) {
   this.emit('warning', warning(message, this.line))
 }
 
-Parser.prototype.parseSync = function(file) {
+Parser.prototype.parseSync = function (file) {
   var filetype = determineFiletype(file, this._index, 100 * LIMIT)
   this.format.filetype = filetype
   this._syncResult = []
@@ -11129,18 +11151,18 @@ Parser.prototype.parseSync = function(file) {
 
 module.exports = Parser
 
-},{"./_determine-filetype":337,"./_drill-mode":338,"./_parse-drill":339,"./_parse-gerber":340,"./_warning":343,"./get-next-block":344,"inherits":366,"readable-stream":473,"string_decoder":490}],349:[function(require,module,exports){
+},{"./_determine-filetype":337,"./_drill-mode":338,"./_parse-drill":339,"./_parse-gerber":340,"./_warning":343,"./get-next-block":344,"inherits":366,"readable-stream":474,"string_decoder":490}],349:[function(require,module,exports){
 // bounding box utilities and helpers
 // bouding boxes are arrays of the format: [xMin, yMin, xMax, yMax]
 'use strict'
 
 // returns a new bounding box that is infinitely small and centered on nothing
-var newBox = function() {
+var newBox = function () {
   return [Infinity, Infinity, -Infinity, -Infinity]
 }
 
 // adds the two bounding boxes and returns a new one
-var add = function(box, target) {
+var add = function (box, target) {
   return [
     Math.min(box[0], target[0]),
     Math.min(box[1], target[1]),
@@ -11150,7 +11172,7 @@ var add = function(box, target) {
 }
 
 // adds a point to a bounding box
-var addPoint = function(box, point) {
+var addPoint = function (box, point) {
   return [
     Math.min(box[0], point[0]),
     Math.min(box[1], point[1]),
@@ -11160,7 +11182,7 @@ var addPoint = function(box, point) {
 }
 
 // add a circle at (cx, cy) with radius r to box
-var addCircle = function(box, r, cx, cy) {
+var addCircle = function (box, r, cx, cy) {
   return [
     Math.min(box[0], cx - r),
     Math.min(box[1], cy - r),
@@ -11170,20 +11192,15 @@ var addCircle = function(box, r, cx, cy) {
 }
 
 // translate a box by a delta [x, y]
-var translate = function(box, delta) {
+var translate = function (box, delta) {
   var dx = delta[0]
   var dy = delta[1]
 
-  return [
-    box[0] + dx,
-    box[1] + dy,
-    box[2] + dx,
-    box[3] + dy
-  ]
+  return [box[0] + dx, box[1] + dy, box[2] + dx, box[3] + dy]
 }
 
 // get the overall box if box is repeated at [x, y]
-var repeat = function(box, repeat) {
+var repeat = function (box, repeat) {
   return add(box, translate(box, repeat))
 }
 
@@ -11209,7 +11226,7 @@ var THREE_HALF_PI = 3 * Math.PI / 2
 
 // flash operation
 // returns a bounding box for the operation
-var flash = function(coord, tool, region, plotter) {
+var flash = function (coord, tool, region, plotter) {
   // no flashing allowed in region mode
   if (region) {
     plotter._warn('flash in region ignored')
@@ -11234,7 +11251,7 @@ var flash = function(coord, tool, region, plotter) {
 
 // given a start, end, direction, arc quadrant mode, and list of potential centers, find the
 // angles of the start and end points, the sweep angle, and the center
-var findCenterAndAngles = function(start, end, mode, arc, centers) {
+var findCenterAndAngles = function (start, end, mode, arc, centers) {
   var thetaStart
   var thetaEnd
   var sweep
@@ -11246,25 +11263,22 @@ var findCenterAndAngles = function(start, end, mode, arc, centers) {
     thetaEnd = Math.atan2(end[1] - candidate[1], end[0] - candidate[0])
 
     // in clockwise mode, ensure the start is greater than the end and check the sweep
-    if (mode === 'cw') {
-      thetaStart = (thetaStart >= thetaEnd) ? thetaStart : (thetaStart + TWO_PI)
-    }
     // do the opposite for counter-clockwise
-    else {
-      thetaEnd = (thetaEnd >= thetaStart) ? thetaEnd : (thetaEnd + TWO_PI)
+    if (mode === 'cw') {
+      thetaStart = thetaStart >= thetaEnd ? thetaStart : thetaStart + TWO_PI
+    } else {
+      thetaEnd = thetaEnd >= thetaStart ? thetaEnd : thetaEnd + TWO_PI
     }
 
     sweep = Math.abs(thetaStart - thetaEnd)
 
     // in single quadrant mode, the center is only valid if the sweep is less than 90 degrees
+    // in multiquandrant mode there's only one candidate; we're within spec to assume it's good
     if (arc === 's') {
       if (sweep <= HALF_PI) {
         center = candidate
       }
-    }
-
-    // in multiquandrant mode there's only one candidate; we're within spec to assume it's good
-    else {
+    } else {
       center = candidate
     }
   }
@@ -11274,10 +11288,10 @@ var findCenterAndAngles = function(start, end, mode, arc, centers) {
   }
 
   // ensure the thetas are [0, TWO_PI)
-  thetaStart = (thetaStart >= 0) ? thetaStart : thetaStart + TWO_PI
-  thetaStart = (thetaStart < TWO_PI) ? thetaStart : thetaStart - TWO_PI
-  thetaEnd = (thetaEnd >= 0) ? thetaEnd : thetaEnd + TWO_PI
-  thetaEnd = (thetaEnd < TWO_PI) ? thetaEnd : thetaEnd - TWO_PI
+  thetaStart = thetaStart >= 0 ? thetaStart : thetaStart + TWO_PI
+  thetaStart = thetaStart < TWO_PI ? thetaStart : thetaStart - TWO_PI
+  thetaEnd = thetaEnd >= 0 ? thetaEnd : thetaEnd + TWO_PI
+  thetaEnd = thetaEnd < TWO_PI ? thetaEnd : thetaEnd - TWO_PI
 
   return {
     center: center,
@@ -11287,7 +11301,7 @@ var findCenterAndAngles = function(start, end, mode, arc, centers) {
   }
 }
 
-var arcBox = function(cenAndAngles, r, region, tool, dir) {
+var arcBox = function (cenAndAngles, r, region, tool, dir) {
   var startPoint = cenAndAngles.start
   var endPoint = cenAndAngles.end
   var center = cenAndAngles.center
@@ -11300,8 +11314,7 @@ var arcBox = function(cenAndAngles, r, region, tool, dir) {
   if (dir === 'cw') {
     start = endPoint[2]
     end = startPoint[2]
-  }
-  else {
+  } else {
     start = startPoint[2]
     end = endPoint[2]
   }
@@ -11310,32 +11323,32 @@ var arcBox = function(cenAndAngles, r, region, tool, dir) {
   var points = [startPoint, endPoint]
 
   // check for sweep past 0 degrees
-  if ((start > end) || (sweep === TWO_PI)) {
+  if (start > end || sweep === TWO_PI) {
     points.push([center[0] + r, center[1]])
   }
 
   // rotate to check for sweep past 90 degrees
-  start = (start >= HALF_PI) ? (start - HALF_PI) : (start + THREE_HALF_PI)
-  end = (end >= HALF_PI) ? (end - HALF_PI) : (end + THREE_HALF_PI)
-  if ((start > end) || (sweep === TWO_PI)) {
+  start = start >= HALF_PI ? start - HALF_PI : start + THREE_HALF_PI
+  end = end >= HALF_PI ? end - HALF_PI : end + THREE_HALF_PI
+  if (start > end || sweep === TWO_PI) {
     points.push([center[0], center[1] + r])
   }
 
   // rotate again to check for sweep past 180 degrees
-  start = (start >= HALF_PI) ? (start - HALF_PI) : (start + THREE_HALF_PI)
-  end = (end >= HALF_PI) ? (end - HALF_PI) : (end + THREE_HALF_PI)
-  if ((start > end) || (sweep === TWO_PI)) {
+  start = start >= HALF_PI ? start - HALF_PI : start + THREE_HALF_PI
+  end = end >= HALF_PI ? end - HALF_PI : end + THREE_HALF_PI
+  if (start > end || sweep === TWO_PI) {
     points.push([center[0] - r, center[1]])
   }
 
   // rotate again to check for sweep past 270 degrees
-  start = (start >= HALF_PI) ? (start - HALF_PI) : (start + THREE_HALF_PI)
-  end = (end >= HALF_PI) ? (end - HALF_PI) : (end + THREE_HALF_PI)
-  if ((start > end) || (sweep === TWO_PI)) {
+  start = start >= HALF_PI ? start - HALF_PI : start + THREE_HALF_PI
+  end = end >= HALF_PI ? end - HALF_PI : end + THREE_HALF_PI
+  if (start > end || sweep === TWO_PI) {
     points.push([center[0], center[1] - r])
   }
 
-  return points.reduce(function(result, m) {
+  return points.reduce(function (result, m) {
     if (!region) {
       var mBox = boundingBox.translate(tool.box, m)
       return boundingBox.add(result, mBox)
@@ -11345,32 +11358,33 @@ var arcBox = function(cenAndAngles, r, region, tool, dir) {
   }, boundingBox.new())
 }
 
-var roundToZero = function(number, epsilon) {
-  return (number >= epsilon) ? number : 0
+var roundToZero = function (number, epsilon) {
+  return number >= epsilon ? number : 0
 }
 
 // find the center of an arc given its endpoints and its radius
 // assume the arc is <= 180 degress
 // thank you this guy: http://math.stackexchange.com/a/87912
-var arcCenterFromRadius = function(start, end, mode, epsilon, radius) {
-  var sign = (mode === 'ccw') ? 1 : -1
+var arcCenterFromRadius = function (start, end, mode, epsilon, radius) {
+  var sign = mode === 'ccw' ? 1 : -1
   var xAve = (start[0] + end[0]) / 2
   var yAve = (start[1] + end[1]) / 2
   var deltaX = end[0] - start[1]
   var deltaY = end[1] - start[1]
   var distance = Math.sqrt(Math.pow(deltaX, 2) + Math.pow(deltaY, 2))
   var halfDistance = distance / 2
-  var squareDifference = Math.sqrt(Math.pow(radius, 2) - Math.pow(halfDistance, 2))
+  var squareDifference = Math.sqrt(
+    Math.pow(radius, 2) - Math.pow(halfDistance, 2)
+  )
   var xOffset = -sign * deltaY * squareDifference / distance
   var yOffset = sign * deltaX * squareDifference / distance
 
-  return [[
-    roundToZero(xAve + xOffset, epsilon),
-    roundToZero(yAve + yOffset, epsilon)
-  ]]
+  return [
+    [roundToZero(xAve + xOffset, epsilon), roundToZero(yAve + yOffset, epsilon)]
+  ]
 }
 
-var drawArc = function(
+var drawArc = function (
   start,
   end,
   offset,
@@ -11380,10 +11394,11 @@ var drawArc = function(
   region,
   epsilon,
   pathGraph,
-  plotter) {
-
+  plotter
+) {
   // get the radius of the arc from the offsets
-  var r = offset[2] || Math.sqrt(Math.pow(offset[0], 2) + Math.pow(offset[1], 2))
+  var r =
+    offset[2] || Math.sqrt(Math.pow(offset[0], 2) + Math.pow(offset[1], 2))
 
   // potential candidates for the arc center
   // in single quadrant mode, all offset signs are implicit, so we need to check a few
@@ -11391,17 +11406,15 @@ var drawArc = function(
   var xCandidates = []
   var yCandidates = []
 
-  if (offset[0] && (arc === 's')) {
+  if (offset[0] && arc === 's') {
     xCandidates.push(start[0] + offset[0], start[0] - offset[0])
-  }
-  else {
+  } else {
     xCandidates.push(start[0] + offset[0])
   }
 
-  if (offset[1] && (arc === 's')) {
+  if (offset[1] && arc === 's') {
     yCandidates.push(start[1] + offset[1], start[1] - offset[1])
-  }
-  else {
+  } else {
     yCandidates.push(start[1] + offset[1])
   }
 
@@ -11416,23 +11429,27 @@ var drawArc = function(
   if (offset[2]) {
     arc = 'm'
     validCenters = arcCenterFromRadius(start, end, mode, epsilon, offset[2])
-  }
-  else if (arc === 's') {
-    validCenters = candidates.filter(function(c) {
-      var startDist = Math.sqrt(Math.pow(c[0] - start[0], 2) + Math.pow(c[1] - start[1], 2))
-      var endDist = Math.sqrt(Math.pow(c[0] - end[0], 2) + Math.pow(c[1] - end[1], 2))
+  } else if (arc === 's') {
+    validCenters = candidates.filter(function (c) {
+      var startDist = Math.sqrt(
+        Math.pow(c[0] - start[0], 2) + Math.pow(c[1] - start[1], 2)
+      )
+      var endDist = Math.sqrt(
+        Math.pow(c[0] - end[0], 2) + Math.pow(c[1] - end[1], 2)
+      )
 
-      return ((Math.abs(startDist - r) <= epsilon) && (Math.abs(endDist - r) <= epsilon))
+      return (
+        Math.abs(startDist - r) <= epsilon && Math.abs(endDist - r) <= epsilon
+      )
     })
-  }
-  else {
+  } else {
     validCenters = candidates
   }
 
   var cenAndAngles = findCenterAndAngles(start, end, mode, arc, validCenters)
 
   // edge case: matching start and end in multi quadrant mode is a full circle
-  if ((arc === 'm') && (start[0] === end[0]) && (start[1] === end[1])) {
+  if (arc === 'm' && start[0] === end[0] && start[1] === end[1]) {
     cenAndAngles.sweep = TWO_PI
   }
 
@@ -11449,15 +11466,14 @@ var drawArc = function(
     })
 
     box = arcBox(cenAndAngles, r, region, tool, mode)
-  }
-  else {
+  } else {
     plotter._warn('skipping impossible arc')
   }
 
   return box
 }
 
-var drawLine = function(start, end, tool, region, pathGraph) {
+var drawLine = function (start, end, tool, region, pathGraph) {
   pathGraph.add({type: 'line', start: start, end: end})
 
   if (!region) {
@@ -11473,7 +11489,7 @@ var drawLine = function(start, end, tool, region, pathGraph) {
 }
 
 // interpolate a rectangle and emit the fill immdeiately
-var interpolateRect = function(start, end, tool, pathGraph, plotter) {
+var interpolateRect = function (start, end, tool, pathGraph, plotter) {
   var hWidth = tool.trace[0] / 2
   var hHeight = tool.trace[1] / 2
   var theta = Math.atan2(end[1] - start[1], end[0] - start[0])
@@ -11492,76 +11508,85 @@ var interpolateRect = function(start, end, tool, pathGraph, plotter) {
   // no movement
   if (start[0] === end[0] && start[1] === end[1]) {
     points.push([sXMin, sYMin], [sXMax, sYMin], [sXMax, sYMax], [sXMin, sYMax])
-  }
-
-  // check for first quadrant move
-  else if ((theta >= 0 && theta < HALF_PI)) {
+  } else if (theta >= 0 && theta < HALF_PI) {
+    // first quadrant move
     points.push(
       [sXMin, sYMin],
       [sXMax, sYMin],
       [eXMax, eYMin],
       [eXMax, eYMax],
       [eXMin, eYMax],
-      [sXMin, sYMax])
-  }
-
-  // check for second quadrant move
-  else if ((theta >= HALF_PI && theta <= PI)) {
+      [sXMin, sYMax]
+    )
+  } else if (theta >= HALF_PI && theta <= PI) {
+    // second quadrant move
     points.push(
       [sXMax, sYMin],
       [sXMax, sYMax],
       [eXMax, eYMax],
       [eXMin, eYMax],
       [eXMin, eYMin],
-      [sXMin, sYMin])
-  }
-
-  // third quadrant move
-  else if ((theta >= -PI && theta < -HALF_PI)) {
+      [sXMin, sYMin]
+    )
+  } else if (theta >= -PI && theta < -HALF_PI) {
+    // third quadrant move
     points.push(
       [sXMax, sYMax],
       [sXMin, sYMax],
       [eXMin, eYMax],
       [eXMin, eYMin],
       [eXMax, eYMin],
-      [sXMax, sYMin])
-  }
-
-  // fourth quadrant move
-  else {
+      [sXMax, sYMin]
+    )
+  } else {
+    // fourth quadrant move
     points.push(
       [sXMin, sYMax],
       [sXMin, sYMin],
       [eXMin, eYMin],
       [eXMax, eYMin],
       [eXMax, eYMax],
-      [sXMax, sYMax])
+      [sXMax, sYMax]
+    )
   }
 
-  points.forEach(function(p, i) {
-    var j = (i < (points.length - 1)) ? i + 1 : 0
+  points.forEach(function (p, i) {
+    var j = i < points.length - 1 ? i + 1 : 0
     pathGraph.add({type: 'line', start: p, end: points[j]})
   })
 
   plotter._finishPath()
 
   return boundingBox.add(
-    boundingBox.translate(tool.box, start), boundingBox.translate(tool.box, end))
+    boundingBox.translate(tool.box, start),
+    boundingBox.translate(tool.box, end)
+  )
 }
 
 // interpolate operation
 // returns a bounding box for the operation
-var interpolate = function(
-  start, end, offset, tool, mode, arc, region, epsilon, pathGraph, plotter) {
-
-  if (!region && (tool.trace.length === 0)) {
-    plotter._warn('tool ' + tool.code + ' is not strokable; ignoring interpolate')
+var interpolate = function (
+  start,
+  end,
+  offset,
+  tool,
+  mode,
+  arc,
+  region,
+  epsilon,
+  pathGraph,
+  plotter
+) {
+  if (!region && tool.trace.length === 0) {
+    plotter._warn(
+      'tool ' + tool.code + ' is not strokable; ignoring interpolate'
+    )
     return boundingBox.new()
   }
 
   if (mode === 'i') {
     // add a line to the path normally if region mode is on or the tool is a circle
-    if (region || (tool.trace.length === 1)) {
+    if (region || tool.trace.length === 1) {
       return drawLine(start, end, tool, region, pathGraph)
     }
 
@@ -11570,27 +11595,47 @@ var interpolate = function(
   }
 
   // else, make sure we're allowed to be drawing an arc, then draw an arc
-  if ((tool.trace.length !== 1) && !region) {
+  if (tool.trace.length !== 1 && !region) {
     plotter._warn('cannot draw an arc with a non-circular tool')
     return boundingBox.new()
   }
 
-  return drawArc(start, end, offset, tool, mode, arc, region, epsilon, pathGraph, plotter)
+  return drawArc(
+    start,
+    end,
+    offset,
+    tool,
+    mode,
+    arc,
+    region,
+    epsilon,
+    pathGraph,
+    plotter
+  )
 }
 
 // takes the start point, the op type, the op coords, the tool, and the push function
 // returns the new plotter position
-var operate = function(
-  type, coord, start, tool, mode, arc, region, pathGraph, epsilon, plotter) {
-
+var operate = function (
+  type,
+  coord,
+  start,
+  tool,
+  mode,
+  arc,
+  region,
+  pathGraph,
+  epsilon,
+  plotter
+) {
   var end = [
-    ((coord.x != null) ? coord.x : start[0]),
-    ((coord.y != null) ? coord.y : start[1])
+    coord.x != null ? coord.x : start[0],
+    coord.y != null ? coord.y : start[1]
   ]
 
   var offset = [
-    ((coord.i != null) ? coord.i : 0),
-    ((coord.j != null) ? coord.j : 0),
+    coord.i != null ? coord.i : 0,
+    coord.j != null ? coord.j : 0,
     coord.a
   ]
 
@@ -11602,7 +11647,17 @@ var operate = function(
 
     case 'int':
       box = interpolate(
-        start, end, offset, tool, mode, arc, region, epsilon, pathGraph, plotter)
+        start,
+        end,
+        offset,
+        tool,
+        mode,
+        arc,
+        region,
+        epsilon,
+        pathGraph,
+        plotter
+      )
       break
 
     default:
@@ -11627,7 +11682,7 @@ var isFinite = require('lodash.isfinite')
 
 var boundingBox = require('./_box')
 
-var roundToPrecision = function(number) {
+var roundToPrecision = function (number) {
   var rounded = Math.round(number * 100000000) / 100000000
   // remove -0 for ease
   if (rounded === 0) {
@@ -11636,11 +11691,11 @@ var roundToPrecision = function(number) {
   return rounded
 }
 
-var degreesToRadians = function(degrees) {
+var degreesToRadians = function (degrees) {
   return degrees * Math.PI / 180
 }
 
-var rotatePointAboutOrigin = function(point, rot) {
+var rotatePointAboutOrigin = function (point, rot) {
   rot = degreesToRadians(rot)
   var sin = Math.sin(rot)
   var cos = Math.cos(rot)
@@ -11653,7 +11708,7 @@ var rotatePointAboutOrigin = function(point, rot) {
   ]
 }
 
-var circle = function(dia, cx, cy, rot) {
+var circle = function (dia, cx, cy, rot) {
   var r = dia / 2
   cx = cx || 0
   cy = cy || 0
@@ -11666,12 +11721,12 @@ var circle = function(dia, cx, cy, rot) {
   }
 
   return {
-    shape: {type: 'circle', cx: cx, cy: cy, r: (dia / 2)},
+    shape: {type: 'circle', cx: cx, cy: cy, r: dia / 2},
     box: boundingBox.addCircle(boundingBox.new(), r, cx, cy)
   }
 }
 
-var vect = function(x1, y1, x2, y2, width, rot) {
+var vect = function (x1, y1, x2, y2, width, rot) {
   // rotate the endpoints if necessary
   if (rot) {
     var start = rotatePointAboutOrigin([x1, y1], rot)
@@ -11689,8 +11744,7 @@ var vect = function(x1, y1, x2, y2, width, rot) {
   if (isFinite(m)) {
     sin *= m / Math.sqrt(1 + Math.pow(m, 2))
     cos *= 1 / Math.sqrt(1 + Math.pow(m, 2))
-  }
-  else {
+  } else {
     cos = 0
   }
 
@@ -11701,7 +11755,7 @@ var vect = function(x1, y1, x2, y2, width, rot) {
   points.push([roundToPrecision(x2 - sin), roundToPrecision(y2 + cos)])
   points.push([roundToPrecision(x1 - sin), roundToPrecision(y1 + cos)])
 
-  var box = points.reduce(function(result, p) {
+  var box = points.reduce(function (result, p) {
     return boundingBox.addPoint(result, p)
   }, boundingBox.new())
 
@@ -11711,7 +11765,7 @@ var vect = function(x1, y1, x2, y2, width, rot) {
   }
 }
 
-var rect = function(width, height, r, cx, cy, rot) {
+var rect = function (width, height, r, cx, cy, rot) {
   cx = cx || 0
   cy = cy || 0
   r = r || 0
@@ -11735,11 +11789,11 @@ var rect = function(width, height, r, cx, cy, rot) {
   }
 }
 
-var outlinePolygon = function(flatPoints, rot) {
+var outlinePolygon = function (flatPoints, rot) {
   var points = []
   var box = boundingBox.new()
   var point
-  for(var i = 0; i < (flatPoints.length - 2); i += 2) {
+  for (var i = 0; i < flatPoints.length - 2; i += 2) {
     point = [flatPoints[i], flatPoints[i + 1]]
     if (rot) {
       point = rotatePointAboutOrigin(point, rot)
@@ -11755,7 +11809,7 @@ var outlinePolygon = function(flatPoints, rot) {
   }
 }
 
-var regularPolygon = function(dia, nPoints, rot, cx, cy) {
+var regularPolygon = function (dia, nPoints, rot, cx, cy) {
   cx = cx || 0
   cy = cy || 0
 
@@ -11784,11 +11838,21 @@ var regularPolygon = function(dia, nPoints, rot, cx, cy) {
 }
 
 // just returns a ring object, does not return a box
-var ring = function(cx, cy, r, width) {
+var ring = function (cx, cy, r, width) {
   return {type: 'ring', cx: cx, cy: cy, r: r, width: width}
 }
 
-var moire = function(dia, ringThx, ringGap, maxRings, crossThx, crossLen, cx, cy, rot) {
+var moire = function (
+  dia,
+  ringThx,
+  ringGap,
+  maxRings,
+  crossThx,
+  crossLen,
+  cx,
+  cy,
+  rot
+) {
   var r = dia / 2
   var shape = []
   var box = boundingBox.addCircle(boundingBox.new(), r, cx, cy)
@@ -11796,14 +11860,14 @@ var moire = function(dia, ringThx, ringGap, maxRings, crossThx, crossLen, cx, cy
   var gapAndHalfThx = ringGap + halfThx
 
   // add rings
-  while ((r > ringThx) && (shape.length < maxRings)) {
+  while (r > ringThx && shape.length < maxRings) {
     r -= halfThx
     shape.push(ring(cx, cy, roundToPrecision(r), ringThx))
     r -= gapAndHalfThx
   }
 
   // add a circle if necessary
-  if ((r > 0) && (shape.length < maxRings)) {
+  if (r > 0 && shape.length < maxRings) {
     shape.push(circle(roundToPrecision(2 * r), cx, cy).shape)
   }
 
@@ -11818,7 +11882,7 @@ var moire = function(dia, ringThx, ringGap, maxRings, crossThx, crossLen, cx, cy
   return {shape: shape, box: box}
 }
 
-var thermal = function(cx, cy, outerDia, innerDia, gap, rot) {
+var thermal = function (cx, cy, outerDia, innerDia, gap, rot) {
   var side = roundToPrecision((outerDia - gap) / 2)
   var offset = roundToPrecision((outerDia + gap) / 4)
   var width = roundToPrecision((outerDia - innerDia) / 2)
@@ -11839,23 +11903,22 @@ var thermal = function(cx, cy, outerDia, innerDia, gap, rot) {
   }
 }
 
-var runMacro = function(mods, blocks) {
+var runMacro = function (mods, blocks) {
   var emptyMacro = {shape: [], box: boundingBox.new()}
   var exposure = 1
 
   blocks = blocks || []
 
-  return blocks.reduce(function(result, block) {
+  return blocks.reduce(function (result, block) {
     var shapeAndBox
 
     if (block.type !== 'variable' && block.type !== 'comment') {
-      block = Object.keys(block).reduce(function(result, key) {
+      block = Object.keys(block).reduce(function (result, key) {
         var value = block[key]
 
         if (isFunction(value)) {
           result[key] = value(mods)
-        }
-        else {
+        } else {
           result[key] = value
         }
 
@@ -11863,10 +11926,10 @@ var runMacro = function(mods, blocks) {
       }, {})
     }
 
-    if ((block.exp != null) && (block.exp !== exposure)) {
+    if (block.exp != null && block.exp !== exposure) {
       result.shape.push({
         type: 'layer',
-        polarity: (block.exp === 1) ? 'dark' : 'clear',
+        polarity: block.exp === 1 ? 'dark' : 'clear',
         box: result.box.slice(0)
       })
       exposure = block.exp
@@ -11879,11 +11942,24 @@ var runMacro = function(mods, blocks) {
 
       case 'vect':
         shapeAndBox = vect(
-          block.x1, block.y1, block.x2, block.y2, block.width, block.rot)
+          block.x1,
+          block.y1,
+          block.x2,
+          block.y2,
+          block.width,
+          block.rot
+        )
         break
 
       case 'rect':
-        shapeAndBox = rect(block.width, block.height, 0, block.cx, block.cy, block.rot)
+        shapeAndBox = rect(
+          block.width,
+          block.height,
+          0,
+          block.cx,
+          block.cy,
+          block.rot
+        )
         break
 
       case 'rectLL':
@@ -11900,7 +11976,12 @@ var runMacro = function(mods, blocks) {
 
       case 'poly':
         shapeAndBox = regularPolygon(
-          block.dia, block.vertices, block.rot, block.cx, block.cy)
+          block.dia,
+          block.vertices,
+          block.rot,
+          block.cx,
+          block.cy
+        )
         break
 
       case 'moire':
@@ -11913,12 +11994,19 @@ var runMacro = function(mods, blocks) {
           block.crossLen,
           block.cx,
           block.cy,
-          block.rot)
+          block.rot
+        )
         break
 
       case 'thermal':
         shapeAndBox = thermal(
-          block.cx, block.cy, block.outerDia, block.innerDia, block.gap, block.rot)
+          block.cx,
+          block.cy,
+          block.outerDia,
+          block.innerDia,
+          block.gap,
+          block.rot
+        )
         break
 
       case 'variable':
@@ -11940,7 +12028,7 @@ var runMacro = function(mods, blocks) {
   }, emptyMacro)
 }
 
-module.exports = function padShape(tool, macros) {
+module.exports = function padShape (tool, macros) {
   var shape = []
   var box = boundingBox.new()
   var toolShape = tool.shape
@@ -11950,24 +12038,15 @@ module.exports = function padShape(tool, macros) {
 
   if (toolShape === 'circle') {
     shapeAndBox = circle(params[0])
-  }
-
-  else if (toolShape === 'rect') {
+  } else if (toolShape === 'rect') {
     shapeAndBox = rect(params[0], params[1])
-  }
-
-  else if (toolShape === 'obround') {
-    shapeAndBox = rect(params[0], params[1], (Math.min(params[0], params[1]) / 2))
-  }
-
-  else if (toolShape === 'poly') {
+  } else if (toolShape === 'obround') {
+    shapeAndBox = rect(params[0], params[1], Math.min(params[0], params[1]) / 2)
+  } else if (toolShape === 'poly') {
     shapeAndBox = regularPolygon(params[0], params[1], params[2])
-  }
-
-  // else we got a macro
-  // run the macro and return
-  else {
-    var mods = params.reduce(function(result, val, index) {
+  } else {
+    // else we got a macro, so run the macro and return
+    var mods = params.reduce(function (result, val, index) {
       result['$' + (index + 1)] = val
 
       return result
@@ -11981,9 +12060,10 @@ module.exports = function padShape(tool, macros) {
   box = boundingBox.add(box, shapeAndBox.box)
 
   if (tool.hole.length) {
-    holeShape = (tool.hole.length === 1) ?
-      circle(tool.hole[0]).shape :
-      rect(tool.hole[0], tool.hole[1]).shape
+    holeShape =
+      tool.hole.length === 1
+        ? circle(tool.hole[0]).shape
+        : rect(tool.hole[0], tool.hole[1]).shape
 
     shape.push({type: 'layer', polarity: 'clear', box: box}, holeShape)
   }
@@ -11995,7 +12075,7 @@ module.exports = function padShape(tool, macros) {
 // simple warning
 'use strict'
 
-var warning = function(message, line) {
+var warning = function (message, line) {
   return {message: message, line: line}
 }
 
@@ -12007,7 +12087,7 @@ module.exports = warning
 
 var Plotter = require('./plotter')
 
-var verifyNota = function(nota) {
+var verifyNota = function (nota) {
   if (nota === 'A' || nota === 'I') {
     return nota
   }
@@ -12015,7 +12095,7 @@ var verifyNota = function(nota) {
   throw new Error('notation must be "in" or "mm"')
 }
 
-var verifyUnits = function(units) {
+var verifyUnits = function (units) {
   if (units === 'in' || units === 'mm') {
     return units
   }
@@ -12023,18 +12103,16 @@ var verifyUnits = function(units) {
   throw new Error('units must be "in" or "mm"')
 }
 
-module.exports = function plotterFactory(options) {
+module.exports = function plotterFactory (options) {
   options = options || {}
 
-  var units = (options.units) ? verifyUnits(options.units) : null
-  var backupUnits = (options.backupUnits)
+  var units = options.units ? verifyUnits(options.units) : null
+  var backupUnits = options.backupUnits
     ? verifyUnits(options.backupUnits)
     : null
 
-  var nota = (options.nota) ? verifyNota(options.nota) : null
-  var backupNota = (options.backupNota)
-    ? verifyNota(options.backupNota)
-    : null
+  var nota = options.nota ? verifyNota(options.nota) : null
+  var backupNota = options.backupNota ? verifyNota(options.backupNota) : null
 
   return new Plotter(
     units,
@@ -12042,7 +12120,8 @@ module.exports = function plotterFactory(options) {
     nota,
     backupNota,
     options.optimizePaths,
-    options.plotAsOutline)
+    options.plotAsOutline
+  )
 }
 
 },{"./plotter":355}],354:[function(require,module,exports){
@@ -12051,9 +12130,7 @@ module.exports = function plotterFactory(options) {
 
 var fill = require('lodash.fill')
 
-var MAX_GAP = 0.00011
-
-var find = function(collection, condition) {
+var find = function (collection, condition) {
   var element
   var i
 
@@ -12066,115 +12143,152 @@ var find = function(collection, condition) {
   }
 }
 
-var distance = function(point, target) {
-  return Math.sqrt(Math.pow(point[0] - target[0], 2) + Math.pow(point[1] - target[1], 2))
+var findClosest = function (points, position, fillGaps) {
+  var result = points.reduce(
+    function (prev, point) {
+      var d = distance(position, point.position)
+      if (d < fillGaps && d < prev.distance) {
+        return {point: point, distance: d}
+      }
+      return prev
+    },
+    {point: undefined, distance: Infinity}
+  )
+
+  return result.point
 }
 
-var pointsEqual = function(point, target, fillGaps) {
-  if (!fillGaps) {
-    return ((point[0] === target[0]) && (point[1] === target[1]))
-  }
-
-  return (distance(point, target) < fillGaps)
+var distance = function (point, target) {
+  return Math.sqrt(
+    Math.pow(point[0] - target[0], 2) + Math.pow(point[1] - target[1], 2)
+  )
 }
 
-var lineSegmentsEqual = function(segment, target) {
+var pointsEqual = function (point, target) {
+  return point[0] === target[0] && point[1] === target[1]
+}
+
+var lineSegmentsEqual = function (segment, target) {
   return (
-    (segment.type === 'line') &&
-    (
-      (pointsEqual(segment.start, target.start) && pointsEqual(segment.end, target.end)) ||
-      (pointsEqual(segment.start, target.end) && pointsEqual(segment.end, target.start))))
+    segment.type === 'line' &&
+    ((pointsEqual(segment.start, target.start) &&
+      pointsEqual(segment.end, target.end)) ||
+      (pointsEqual(segment.start, target.end) &&
+        pointsEqual(segment.end, target.start)))
+  )
 }
 
-var reverseSegment = function(segment) {
+var reverseSegment = function (segment) {
   var reversed = {type: segment.type, start: segment.end, end: segment.start}
 
   if (segment.type === 'arc') {
     reversed.center = segment.center
     reversed.radius = segment.radius
     reversed.sweep = segment.sweep
-    reversed.dir = (segment.dir === 'cw') ? 'ccw' : 'cw'
+    reversed.dir = segment.dir === 'cw' ? 'ccw' : 'cw'
   }
 
   return reversed
 }
 
-var PathGraph = function(optimize, fillGaps) {
-  this._points = []
+var PathGraph = function (optimize, fillGaps) {
   this._edges = []
   this._optimize = optimize
-  this._fillGaps = (fillGaps === true)
-    ? MAX_GAP
-    : fillGaps
-
+  this._fillGaps = fillGaps
   this.length = 0
 }
 
-PathGraph.prototype.add = function(newSeg) {
-  var start
-  var end
-  var fillGaps = this._fillGaps
+PathGraph.prototype.add = function (newSeg) {
+  var edge = {segment: newSeg, start: newSeg.start, end: newSeg.end}
+  this._edges.push(edge)
+  this.length++
+}
 
-  if (this._optimize) {
-    start = find(this._points, function(point) {
-      return pointsEqual(point.position, newSeg.start, fillGaps)
+PathGraph.prototype._fillGapsAndOptimize = function () {
+  var newSegs = this._edges.map(function (x) {
+    return x.segment
+  })
+  this._edges = []
+  this.length = 0
+  var points = newSegs.reduce(function (prev, seg) {
+    return prev.concat([
+      {position: seg.start, edges: []},
+      {position: seg.end, edges: []}
+    ])
+  }, [])
+
+  var len = newSegs.length
+  for (var i = 0; i < len; i++) {
+    var newSeg = newSegs[i]
+    var start
+    var end
+    var fillGaps = this._fillGaps
+
+    var startIndex = i * 2
+    var endIndex = startIndex + 1
+
+    var otherPoints = points
+      .slice(0, startIndex)
+      .concat(points.slice(endIndex + 1))
+
+    start = findClosest(otherPoints, newSeg.start, fillGaps)
+    end = findClosest(otherPoints, newSeg.end, fillGaps)
+
+    if (!start) {
+      start = {position: newSeg.start, edges: []}
+    } else if (fillGaps) {
+      newSeg.start = start.position
+    }
+
+    if (!end) {
+      end = {position: newSeg.end, edges: []}
+    } else if (fillGaps) {
+      newSeg.end = end.position
+    }
+
+    // do not allow duplicate line segments
+    var existing = find(this._edges, function (edge) {
+      return lineSegmentsEqual(edge.segment, newSeg)
     })
 
-    end = find(this._points, function(point) {
-      return pointsEqual(point.position, newSeg.end, fillGaps)
-    })
+    if (!existing) {
+      var newEdgeIndex = this._edges.length
+      var edge = {segment: newSeg, start: start, end: end}
 
-    end = find(this._points, function(point) {
-      return pointsEqual(point.position, newSeg.end, fillGaps)
-    })
-  }
+      points[startIndex].edges.push(newEdgeIndex)
+      points[startIndex].position = edge.start.position
+      points[endIndex].edges.push(newEdgeIndex)
+      points[endIndex].position = edge.end.position
 
-  var startAndEndExist = (start && end)
-
-  if (!start) {
-    start = {position: newSeg.start, edges: []}
-    this._points.push(start)
-  }
-  else if (fillGaps) {
-    newSeg.start = start.position
-  }
-
-  if (!end) {
-    end = {position: newSeg.end, edges: []}
-    this._points.push(end)
-  }
-  else if (fillGaps) {
-    newSeg.end = end.position
-  }
-
-  // if optimizing, do not allow duplicate line segments
-  if (startAndEndExist) {
-    var edges = this._edges
-    var existing = find(start.edges.concat(end.edges), function(edge) {
-      return lineSegmentsEqual(edges[edge].segment, newSeg)
-    })
-
-    if (existing != null) {
-      return
+      this._edges.push(edge)
+      this.length++
     }
   }
 
-  var newEdgeIndex = this._edges.length
-  var edge = {segment: newSeg, start: start, end: end}
-
-  this._edges.push(edge)
-  this.length++
-
-  end.edges.push(newEdgeIndex)
-  start.edges.push(newEdgeIndex)
+  // consolidate all the connecting edges to prepare for a depth first
+  // traversal. depth first traversal is used so that when converted to an SVG
+  // path it retains its shape. see discussion:
+  // https://github.com/mcous/gerber-plotter/pull/13
+  this._edges.forEach(function (edge) {
+    points.forEach(function (point) {
+      if (pointsEqual(point.position, edge.start.position)) {
+        edge.start.edges = edge.start.edges.concat(point.edges)
+      }
+      if (pointsEqual(point.position, edge.end.position)) {
+        edge.end.edges = edge.end.edges.concat(point.edges)
+      }
+    })
+  })
 }
 
-PathGraph.prototype.traverse = function() {
+PathGraph.prototype.traverse = function () {
   if (!this._optimize) {
-    return this._edges.map(function(edge) {
+    return this._edges.map(function (edge) {
       return edge.segment
     })
   }
+
+  this._fillGapsAndOptimize()
 
   var walked = fill(Array(this._edges.length), false)
   var discovered = []
@@ -12202,14 +12316,13 @@ PathGraph.prototype.traverse = function() {
         if (pointsEqual(lastEnd.position, currentEnd.position)) {
           currentSegment = reverseSegment(currentEdge.segment)
           lastEnd = currentEdge.start
-        }
-        else {
+        } else {
           currentSegment = currentEdge.segment
           lastEnd = currentEdge.end
         }
 
         // add non-walked adjacent nodes to the discovered stack
-        lastEnd.edges.reverse().forEach(function(seg) {
+        lastEnd.edges.reverse().forEach(function (seg) {
           if (!walked[seg]) {
             discovered.push(seg)
           }
@@ -12238,22 +12351,25 @@ var padShape = require('./_pad-shape')
 var operate = require('./_operate')
 var boundingBox = require('./_box')
 
-var isFormatKey = function(key) {
+var MAX_GAP = 0.00011
+
+var isFormatKey = function (key) {
   return (
     key === 'units' ||
     key === 'backupUnits' ||
     key === 'nota' ||
-    key === 'backupNota')
+    key === 'backupNota'
+  )
 }
 
-var Plotter = function(
+var Plotter = function (
   units,
   backupUnits,
   nota,
   backupNota,
   optimizePaths,
-  plotAsOutline) {
-
+  plotAsOutline
+) {
   Transform.call(this, {
     readableObjectMode: true,
     writableObjectMode: true
@@ -12267,14 +12383,19 @@ var Plotter = function(
   }
 
   this._formatLock = {
-    units: (units != null),
-    backupUnits: (backupUnits != null),
-    nota:  (nota != null),
-    backupNota:  (backupNota != null)
+    units: units != null,
+    backupUnits: backupUnits != null,
+    nota: nota != null,
+    backupNota: backupNota != null
   }
 
-  // plotting options
-  this._plotAsOutline = plotAsOutline
+  this._plotAsOutline = plotAsOutline === true ? MAX_GAP : plotAsOutline
+
+  // plotAsOutline parameter is always in mm
+  if ((units || this.format.backupUnits) === 'in') {
+    this._plotAsOutline = this._plotAsOutline / 25.4
+  }
+
   this._optimizePaths = optimizePaths || plotAsOutline
 
   this._line = 0
@@ -12296,51 +12417,52 @@ var Plotter = function(
 
 inherits(Plotter, Transform)
 
-Plotter.prototype._finishPath = function(doNotOptimize) {
+Plotter.prototype._finishPath = function (doNotOptimize) {
   var path = this._path.traverse()
-  this._path = new PathGraph(((!doNotOptimize) && this._optimizePaths), this._plotAsOutline)
+  this._path = new PathGraph(
+    !doNotOptimize && this._optimizePaths,
+    this._plotAsOutline
+  )
 
   if (path.length) {
     // check for outline tool
-    var tool = (!this._plotAsOutline) ? this._tool : this._outTool
+    var tool = !this._plotAsOutline ? this._tool : this._outTool
 
-    if (!this._region && (tool.trace.length === 1)) {
+    if (!this._region && tool.trace.length === 1) {
       this.push({type: 'stroke', width: tool.trace[0], path: path})
-    }
-    else {
+    } else {
       this.push({type: 'fill', path: path})
     }
   }
 }
 
-Plotter.prototype._warn = function(message) {
+Plotter.prototype._warn = function (message) {
   this.emit('warning', warning(message, this._line))
 }
 
-Plotter.prototype._checkFormat = function() {
+Plotter.prototype._checkFormat = function () {
   if (!this.format.units) {
     this.format.units = this.format.backupUnits
     this._warn('units not set; using backup units: ' + this.format.units)
   }
 
-  if(!this.format.nota) {
+  if (!this.format.nota) {
     this.format.nota = this.format.backupNota
     this._warn('notation not set; using backup notation: ' + this.format.nota)
   }
 }
 
-Plotter.prototype._updateBox = function(box) {
+Plotter.prototype._updateBox = function (box) {
   var stepRepLen = this._stepRep.length
   if (!stepRepLen) {
     this._box = boundingBox.add(this._box, box)
-  }
-  else {
+  } else {
     var repeatBox = boundingBox.repeat(box, this._stepRep[stepRepLen - 1])
     this._box = boundingBox.add(this._box, repeatBox)
   }
 }
 
-Plotter.prototype._transform = function(chunk, encoding, done) {
+Plotter.prototype._transform = function (chunk, encoding, done) {
   var type = chunk.type
   this._line = chunk.line
 
@@ -12360,16 +12482,14 @@ Plotter.prototype._transform = function(chunk, encoding, done) {
     if (this.nota === 'I') {
       var _this = this
 
-      coord = Object.keys(coord).reduce(function(result, key) {
+      coord = Object.keys(coord).reduce(function (result, key) {
         var value = coord[key]
 
         if (key === 'x') {
           result[key] = _this._pos[0] + value
-        }
-        else if (key === 'y') {
+        } else if (key === 'y') {
           result[key] = _this._pos[1] + value
-        }
-        else {
+        } else {
           result[key] = value
         }
 
@@ -12388,11 +12508,7 @@ Plotter.prototype._transform = function(chunk, encoding, done) {
         this._mode = 'i'
       }
 
-      if (
-        (this._arc == null) &&
-        (this._mode.slice(-2) === 'cw') &&
-        !coord.a) {
-
+      if (this._arc == null && this._mode.slice(-2) === 'cw' && !coord.a) {
         this._warn('quadrant mode unspecified; assuming single quadrant')
         this._arc = 's'
       }
@@ -12409,17 +12525,16 @@ Plotter.prototype._transform = function(chunk, encoding, done) {
       this._tool,
       this._mode,
       this._arc,
-      (this._region || this._plotAsOutline),
+      this._region || this._plotAsOutline,
       this._path,
       this._epsilon,
-      this)
+      this
+    )
 
     this._lastOp = op
     this._pos = result.pos
     this._updateBox(result.box)
-  }
-
-  else if (type === 'set') {
+  } else if (type === 'set') {
     var prop = chunk.prop
     var value = chunk.value
 
@@ -12427,43 +12542,35 @@ Plotter.prototype._transform = function(chunk, encoding, done) {
     if (prop === 'region') {
       this._finishPath(value)
       this._region = value
-    }
-
-    // else we might need to set the format
-    else if (isFormatKey(prop) && !this._formatLock[prop]) {
+    } else if (isFormatKey(prop) && !this._formatLock[prop]) {
+      // else we might need to set the format
       this.format[prop] = value
       if (prop === 'units' || prop === 'nota') {
         this._formatLock[prop] = true
       }
-    }
-
-    // else if we're dealing with a tool change, finish the path and change
-    else if (prop === 'tool') {
+    } else if (prop === 'tool') {
+      // else if we're dealing with a tool change, finish the path and change
       if (this._region) {
         this._warn('cannot change tool while region mode is on')
-      }
-      else if (!this._tools[value]) {
+      } else if (!this._tools[value]) {
         this._warn('tool ' + value + ' is not defined')
-      }
-      else if (!this._outTool){
+      } else if (!this._outTool) {
         this._finishPath()
         this._tool = this._tools[value]
       }
-    }
-
-    // else set interpolation or arc mode
-    else {
+    } else {
+      // else set interpolation or arc mode
       this['_' + prop] = value
     }
-  }
-
-  // else tool commands
-  else if (type === 'tool') {
+  } else if (type === 'tool') {
+    // else tool commands
     var code = chunk.code
     var toolDef = chunk.tool
 
     if (this._tools[code]) {
-      this._warn('tool ' + code + ' is already defined; ignoring new definition')
+      this._warn(
+        'tool ' + code + ' is already defined; ignoring new definition'
+      )
 
       return done()
     }
@@ -12488,15 +12595,9 @@ Plotter.prototype._transform = function(chunk, encoding, done) {
       this._tools[code] = tool
       this._tool = tool
     }
-  }
-
-  // else macro command
-  else if (type === 'macro') {
+  } else if (type === 'macro') {
     this._macros[chunk.name] = chunk.blocks
-  }
-
-  // else layer command
-  else if (type === 'level') {
+  } else if (type === 'level') {
     var level = chunk.level
     var levelValue = chunk.value
 
@@ -12505,11 +12606,10 @@ Plotter.prototype._transform = function(chunk, encoding, done) {
     if (level === 'polarity') {
       this.push({
         type: 'polarity',
-        polarity: (levelValue === 'C') ? 'clear' : 'dark',
+        polarity: levelValue === 'C' ? 'clear' : 'dark',
         box: this._box.slice(0)
       })
-    }
-    else {
+    } else {
       // calculate new offsets
       var offsets = []
       for (var x = 0; x < levelValue.x; x++) {
@@ -12525,17 +12625,14 @@ Plotter.prototype._transform = function(chunk, encoding, done) {
         box: this._box.slice(0)
       })
     }
-  }
-
-  // else done command
-  else if (type === 'done') {
+  } else if (type === 'done') {
     this._done = true
   }
 
   return done()
 }
 
-Plotter.prototype._flush = function(done) {
+Plotter.prototype._flush = function (done) {
   this._finishPath()
 
   this.push({type: 'size', box: this._box, units: this.format.units})
@@ -12544,28 +12641,28 @@ Plotter.prototype._flush = function(done) {
 
 module.exports = Plotter
 
-},{"./_box":349,"./_operate":350,"./_pad-shape":351,"./_warning":352,"./path-graph":354,"inherits":366,"readable-stream":473}],356:[function(require,module,exports){
+},{"./_box":349,"./_operate":350,"./_pad-shape":351,"./_warning":352,"./path-graph":354,"inherits":366,"readable-stream":474}],356:[function(require,module,exports){
 // create a path from a fill or stroke object
 'use strict'
 
 var util = require('./_util')
 var shift = util.shift
 
-var pointsEqual = function(point, target) {
-  return ((point[0] === target[0]) && (point[1] === target[1]))
+var pointsEqual = function (point, target) {
+  return point[0] === target[0] && point[1] === target[1]
 }
 
-var move = function(start) {
-  return ('M ' + shift(start[0]) + ' ' + shift(start[1]))
+var move = function (start) {
+  return 'M ' + shift(start[0]) + ' ' + shift(start[1])
 }
 
-var line = function(lastCmd, end) {
-  var cmd = (lastCmd === 'L' || lastCmd === 'M') ? '' : 'L '
+var line = function (lastCmd, end) {
+  var cmd = lastCmd === 'L' || lastCmd === 'M' ? '' : 'L '
 
-  return (cmd + shift(end[0]) + ' ' + shift(end[1]))
+  return cmd + shift(end[0]) + ' ' + shift(end[1])
 }
 
-var arc = function(lastCmd, radius, sweep, dir, end, center) {
+var arc = function (lastCmd, radius, sweep, dir, end, center) {
   // add zero-length arcs as zero-length lines to render properly across all browsers
   if (sweep === 0) {
     return line(lastCmd, end)
@@ -12573,7 +12670,7 @@ var arc = function(lastCmd, radius, sweep, dir, end, center) {
 
   // full-circle arcs must be rendered as two separate arcs
   if (sweep === 2 * Math.PI) {
-    var half = [(2 * center[0] - end[0]), 2 * center[1] - end[1]]
+    var half = [2 * center[0] - end[0], 2 * center[1] - end[1]]
 
     var arc1 = arc(lastCmd, radius, Math.PI, dir, half, center)
     var arc2 = arc('A', radius, Math.PI, dir, end, center)
@@ -12581,18 +12678,18 @@ var arc = function(lastCmd, radius, sweep, dir, end, center) {
     return arc1 + ' ' + arc2
   }
 
-  var result = (lastCmd === 'A') ? '' : 'A '
+  var result = lastCmd === 'A' ? '' : 'A '
 
   radius = shift(radius)
   result += radius + ' ' + radius + ' 0 '
-  result += ((sweep > Math.PI) ? '1 ' : '0 ')
-  result += ((dir === 'ccw') ? '1 ' : '0 ')
+  result += sweep > Math.PI ? '1 ' : '0 '
+  result += dir === 'ccw' ? '1 ' : '0 '
   result += shift(end[0]) + ' ' + shift(end[1])
 
   return result
 }
 
-var reduceSegments = function(result, segment) {
+var reduceSegments = function (result, segment) {
   var type = segment.type
   var start = segment.start
   var end = segment.end
@@ -12606,15 +12703,15 @@ var reduceSegments = function(result, segment) {
   if (type === 'line') {
     result.data += line(result.lastCmd, end)
     result.lastCmd = 'L'
-  }
-  else {
+  } else {
     result.data += arc(
       result.lastCmd,
       segment.radius,
       segment.sweep,
       segment.dir,
       end,
-      segment.center)
+      segment.center
+    )
 
     result.lastCmd = 'A'
   }
@@ -12624,7 +12721,7 @@ var reduceSegments = function(result, segment) {
   return result
 }
 
-module.exports = function createPath(segments, width, element) {
+module.exports = function createPath (segments, width, element) {
   var pathData = segments.reduce(reduceSegments, {last: [], data: ''}).data
   var attr = {d: pathData}
 
@@ -12643,7 +12740,7 @@ module.exports = function createPath(segments, width, element) {
 var util = require('./_util')
 var shift = util.shift
 
-module.exports = function flashPad(prefix, tool, x, y, element) {
+module.exports = function flashPad (prefix, tool, x, y, element) {
   var toolId = '#' + prefix + '_pad-' + tool
 
   return element('use', {'xlink:href': toolId, x: shift(x), y: shift(y)})
@@ -12658,11 +12755,11 @@ var shift = util.shift
 var createMask = util.createMask
 var maskLayer = util.maskLayer
 
-var element = function(tag, attr, children) {
+var element = function (tag, attr, children) {
   return {tag: tag, attr: attr, children: children || []}
 }
 
-var circle = function(cx, cy, r, width) {
+var circle = function (cx, cy, r, width) {
   var attr = {
     cx: shift(cx),
     cy: shift(cy),
@@ -12677,7 +12774,7 @@ var circle = function(cx, cy, r, width) {
   return element('circle', attr)
 }
 
-var rect = function(cx, cy, r, width, height) {
+var rect = function (cx, cy, r, width, height) {
   var attr = {
     x: shift(cx - width / 2),
     y: shift(cy - height / 2),
@@ -12693,29 +12790,31 @@ var rect = function(cx, cy, r, width, height) {
   return element('rect', attr)
 }
 
-var poly = function(points) {
-  var pointsAttr = points.map(function(point) {
-    return point.map(shift).join(',')
-  }).join(' ')
+var poly = function (points) {
+  var pointsAttr = points
+    .map(function (point) {
+      return point.map(shift).join(',')
+    })
+    .join(' ')
 
   return element('polygon', {points: pointsAttr})
 }
 
-var clip = function(maskIdPrefix, index, shapes, ring, createElement) {
+var clip = function (maskIdPrefix, index, shapes, ring, createElement) {
   var maskId = maskIdPrefix + 'mask-' + index
   var maskUrl = 'url(#' + maskId + ')'
 
   var circleNode = circle(ring.cx, ring.cy, ring.r, ring.width)
 
-  var mask = createElement(
-    'mask',
-    {id: maskId, stroke: '#fff'},
-    [createElement(circleNode.tag, circleNode.attr)])
+  var mask = createElement('mask', {id: maskId, stroke: '#fff'}, [
+    createElement(circleNode.tag, circleNode.attr)
+  ])
 
-  var groupChildren = shapes.map(function(shape) {
-    var node = (shape.type === 'rect')
-      ? rect(shape.cx, shape.cy, shape.r, shape.width, shape.height)
-      : poly(shape.points)
+  var groupChildren = shapes.map(function (shape) {
+    var node =
+      shape.type === 'rect'
+        ? rect(shape.cx, shape.cy, shape.r, shape.width, shape.height)
+        : poly(shape.points)
 
     return createElement(node.tag, node.attr)
   })
@@ -12725,93 +12824,107 @@ var clip = function(maskIdPrefix, index, shapes, ring, createElement) {
   return {mask: mask, layer: layer}
 }
 
-module.exports = function reduceShapeArray(prefix, code, shapeArray, createElement) {
+module.exports = function reduceShapeArray (
+  prefix,
+  code,
+  shapeArray,
+  createElement
+) {
   var id = prefix + '_pad-' + code
   var maskIdPrefix = id + '_'
 
-  var image = shapeArray.reduce(function(result, shape, index) {
-    var svg
+  var image = shapeArray.reduce(
+    function (result, shape, index) {
+      var svg
 
-    switch (shape.type) {
-      case 'circle':
-        svg = circle(shape.cx, shape.cy, shape.r)
-        break
+      switch (shape.type) {
+        case 'circle':
+          svg = circle(shape.cx, shape.cy, shape.r)
+          break
 
-      case 'ring':
-        svg = circle(shape.cx, shape.cy, shape.r, shape.width)
-        break
+        case 'ring':
+          svg = circle(shape.cx, shape.cy, shape.r, shape.width)
+          break
 
-      case 'rect':
-        svg = rect(shape.cx, shape.cy, shape.r, shape.width, shape.height)
-        break
+        case 'rect':
+          svg = rect(shape.cx, shape.cy, shape.r, shape.width, shape.height)
+          break
 
-      case 'poly':
-        svg = poly(shape.points)
-        break
+        case 'poly':
+          svg = poly(shape.points)
+          break
 
-      case 'clip':
-        var clipNodes = clip(maskIdPrefix, index, shape.shape, shape.clip, createElement)
+        case 'clip':
+          var clipNodes = clip(
+            maskIdPrefix,
+            index,
+            shape.shape,
+            shape.clip,
+            createElement
+          )
 
-        result.masks.push(clipNodes.mask)
-        svg = clipNodes.layer
-        break
+          result.masks.push(clipNodes.mask)
+          svg = clipNodes.layer
+          break
 
-      case 'layer':
-        result.count++
-        result.last = shape.polarity
+        case 'layer':
+          result.count++
+          result.last = shape.polarity
 
-        // if the polarity is clear, wrap the group and start a mask
-        if (shape.polarity === 'clear') {
-          var nextMaskId = maskIdPrefix + result.count
+          // if the polarity is clear, wrap the group and start a mask
+          if (shape.polarity === 'clear') {
+            var nextMaskId = maskIdPrefix + result.count
 
-          result.maskId = nextMaskId
-          result.maskBox = shape.box.slice(0)
-          result.maskChildren = []
-          result.layers = [maskLayer(nextMaskId, result.layers, createElement)]
+            result.maskId = nextMaskId
+            result.maskBox = shape.box.slice(0)
+            result.maskChildren = []
+            result.layers = [
+              maskLayer(nextMaskId, result.layers, createElement)
+            ]
+          } else {
+            var mask = createMask(
+              result.maskId,
+              result.maskBox,
+              result.maskChildren,
+              createElement
+            )
+
+            result.masks.push(mask)
+          }
+          break
+      }
+
+      if (svg) {
+        if (shapeArray.length === 1) {
+          svg.attr.id = id
         }
-        else {
-          var mask = createMask(
-            result.maskId,
-            result.maskBox,
-            result.maskChildren,
-            createElement)
 
-          result.masks.push(mask)
+        var svgElement = createElement(svg.tag, svg.attr, svg.children)
+
+        if (result.last === 'dark') {
+          result.layers.push(svgElement)
+        } else {
+          result.maskChildren.push(svgElement)
         }
-        break
+      }
+
+      return result
+    },
+    {
+      count: 0,
+      last: 'dark',
+      layers: [],
+      maskId: '',
+      maskBox: [],
+      maskChildren: [],
+      masks: []
     }
-
-    if (svg) {
-      if (shapeArray.length === 1) {
-        svg.attr.id = id
-      }
-
-      var svgElement = createElement(svg.tag, svg.attr, svg.children)
-
-      if (result.last === 'dark') {
-        result.layers.push(svgElement)
-      }
-      else {
-        result.maskChildren.push(svgElement)
-      }
-    }
-
-    return result
-  }, {
-    count: 0,
-    last: 'dark',
-    layers: [],
-    maskId: '',
-    maskBox: [],
-    maskChildren: [],
-    masks: []})
+  )
 
   if (image.last === 'clear') {
-    image.masks.push(createMask(
-      image.maskId,
-      image.maskBox,
-      image.maskChildren,
-      createElement))
+    image.masks.push(
+      createMask(image.maskId, image.maskBox, image.maskChildren, createElement)
+    )
   }
 
   if (shapeArray.length > 1) {
@@ -12827,11 +12940,11 @@ module.exports = function reduceShapeArray(prefix, code, shapeArray, createEleme
 
 // shift the decimal place to SVG coordinates (units * 1000)
 // also round to 7 decimal places
-var shift = function(number) {
+var shift = function (number) {
   return Math.round(10000000000 * number) / 10000000
 }
 
-var boundingRect = function(box, fill, element) {
+var boundingRect = function (box, fill, element) {
   return element('rect', {
     x: shift(box[0]),
     y: shift(box[1]),
@@ -12841,13 +12954,13 @@ var boundingRect = function(box, fill, element) {
   })
 }
 
-var maskLayer = function(maskId, layer, element) {
+var maskLayer = function (maskId, layer, element) {
   var maskUrl = 'url(#' + maskId + ')'
 
   return element('g', {mask: maskUrl}, layer)
 }
 
-var createMask = function(maskId, box, children, element) {
+var createMask = function (maskId, box, children, element) {
   children = [boundingRect(box, '#fff', element)].concat(children)
   var attributes = {id: maskId, fill: '#000', stroke: '#000'}
 
@@ -12864,17 +12977,10 @@ module.exports = {
 // clone a PlotterToSvg to a plain object with just enough information to render
 'use strict'
 
-var KEYS = [
-  'defs',
-  'layer',
-  'viewBox',
-  'width',
-  'height',
-  'units'
-]
+var KEYS = ['defs', 'layer', 'viewBox', 'width', 'height', 'units']
 
-module.exports = function cloneConverter(converter) {
-  return KEYS.reduce(function(result, key) {
+module.exports = function cloneConverter (converter) {
+  return KEYS.reduce(function (result, key) {
     var value = converter[key]
 
     if (value != null) {
@@ -12899,7 +13005,7 @@ var PlotterToSvg = require('./plotter-to-svg')
 var render = require('./render')
 var clone = require('./clone')
 
-var getAttributesFromOptions = function(options) {
+var getAttributesFromOptions = function (options) {
   if (!options) {
     return {}
   }
@@ -12908,15 +13014,14 @@ var getAttributesFromOptions = function(options) {
 
   if (isString(options)) {
     attributes.id = options
-  }
-  else if (options.id) {
+  } else if (options.id) {
     attributes.id = options.id
   }
 
   return attributes
 }
 
-var parseOptions = function(options) {
+var parseOptions = function (options) {
   var attributes = getAttributesFromOptions(options)
 
   if (!attributes.id) {
@@ -12927,8 +13032,9 @@ var parseOptions = function(options) {
     svg: {
       attributes: attributes,
       createElement: options.createElement || xmlElementString,
-      includeNamespace: (options.includeNamespace == null) ? true : options.includeNamespace,
-      objectMode: (options.objectMode == null) ? false : options.objectMode
+      includeNamespace:
+        options.includeNamespace == null ? true : options.includeNamespace,
+      objectMode: options.objectMode == null ? false : options.objectMode
     },
     parser: {
       places: options.places,
@@ -12948,15 +13054,16 @@ var parseOptions = function(options) {
   return opts
 }
 
-module.exports = function gerberConverterFactory(gerber, options, done) {
+module.exports = function gerberConverterFactory (gerber, options, done) {
   var opts = parseOptions(options)
-  var callbackMode = (done != null)
+  var callbackMode = done != null
 
   var converter = new PlotterToSvg(
     opts.svg.attributes,
     opts.svg.createElement,
     opts.svg.includeNamespace,
-    opts.svg.objectMode)
+    opts.svg.objectMode
+  )
 
   var parser = gerberParser(opts.parser)
   var plotter = gerberPlotter(opts.plotter)
@@ -12964,31 +13071,30 @@ module.exports = function gerberConverterFactory(gerber, options, done) {
   converter.parser = parser
   converter.plotter = plotter
 
-  parser.on('warning', function handleParserWarning(w) {
+  parser.on('warning', function handleParserWarning (w) {
     converter.emit('warning', w)
   })
-  plotter.on('warning', function handlePlotterWarning(w) {
+  plotter.on('warning', function handlePlotterWarning (w) {
     converter.emit('warning', w)
   })
-  parser.once('error', function handleParserError(e) {
+  parser.once('error', function handleParserError (e) {
     converter.emit('error', e)
   })
-  plotter.once('error', function handlePlotterError(e) {
+  plotter.once('error', function handlePlotterError (e) {
     converter.emit('error', e)
   })
 
   // expose the filetype property of the parser for convenience
-  parser.once('end', function() {
+  parser.once('end', function () {
     converter.filetype = parser.format.filetype
   })
 
   if (gerber.pipe) {
     gerber.setEncoding('utf8')
     gerber.pipe(parser)
-  }
-  else {
+  } else {
     // write the gerber string after listeners have been attached etc
-    process.nextTick(function writeStringToParser() {
+    process.nextTick(function writeStringToParser () {
       parser.write(gerber)
       parser.end()
     })
@@ -13000,11 +13106,11 @@ module.exports = function gerberConverterFactory(gerber, options, done) {
   if (callbackMode) {
     var result = ''
 
-    var finishConversion = function() {
+    var finishConversion = function () {
       return done(null, result)
     }
 
-    converter.on('readable', function collectStreamData() {
+    converter.on('readable', function collectStreamData () {
       var data
 
       do {
@@ -13015,7 +13121,7 @@ module.exports = function gerberConverterFactory(gerber, options, done) {
 
     converter.once('end', finishConversion)
 
-    converter.once('error', function(error) {
+    converter.once('error', function (error) {
       converter.removeListener('end', finishConversion)
 
       return done(error)
@@ -13029,7 +13135,7 @@ module.exports.render = render
 module.exports.clone = clone
 
 }).call(this,require('_process'))
-},{"./clone":360,"./plotter-to-svg":362,"./render":363,"_process":461,"gerber-parser":345,"gerber-plotter":353,"lodash.isstring":433,"xml-element-string":500}],362:[function(require,module,exports){
+},{"./clone":360,"./plotter-to-svg":362,"./render":363,"_process":462,"gerber-parser":345,"gerber-plotter":353,"lodash.isstring":433,"xml-element-string":500}],362:[function(require,module,exports){
 // transform stream to take plotter objects and convert them to an SVG string
 'use strict'
 
@@ -13051,7 +13157,12 @@ var BLOCK_MODE_OFF = 0
 var BLOCK_MODE_DARK = 1
 var BLOCK_MODE_CLEAR = 2
 
-var PlotterToSvg = function(attributes, createElement, includeNamespace, objectMode) {
+var PlotterToSvg = function (
+  attributes,
+  createElement,
+  includeNamespace,
+  objectMode
+) {
   Transform.call(this, {
     writableObjectMode: true,
     readableObjectMode: objectMode
@@ -13086,19 +13197,19 @@ var PlotterToSvg = function(attributes, createElement, includeNamespace, objectM
 
 inherits(PlotterToSvg, Transform)
 
-PlotterToSvg.prototype._transform = function(chunk, encoding, done) {
+PlotterToSvg.prototype._transform = function (chunk, encoding, done) {
   switch (chunk.type) {
     case 'shape':
-      this.defs = this.defs.concat(reduceShapeArray(
-        this._id,
-        chunk.tool,
-        chunk.shape,
-        this._element))
+      this.defs = this.defs.concat(
+        reduceShapeArray(this._id, chunk.tool, chunk.shape, this._element)
+      )
 
       break
 
     case 'pad':
-      this._draw(flashPad(this._id, chunk.tool, chunk.x, chunk.y, this._element))
+      this._draw(
+        flashPad(this._id, chunk.tool, chunk.x, chunk.y, this._element)
+      )
       break
 
     case 'fill':
@@ -13124,7 +13235,7 @@ PlotterToSvg.prototype._transform = function(chunk, encoding, done) {
   done()
 }
 
-PlotterToSvg.prototype._flush = function(done) {
+PlotterToSvg.prototype._flush = function (done) {
   // shut off step repeat finish any in-progress clear layer and/or repeat
   this._handleNewRepeat([])
 
@@ -13137,12 +13248,13 @@ PlotterToSvg.prototype._flush = function(done) {
   done()
 }
 
-PlotterToSvg.prototype._finishBlockLayer = function() {
+PlotterToSvg.prototype._finishBlockLayer = function () {
   // if there's a block, wrap it up, give it an id, and repeat it
   if (this._block.length) {
     this._blockLayerCount++
 
-    var blockLayerId = this._id + '_block-' + this._blockCount + '-' + this._blockLayerCount
+    var blockLayerId =
+      this._id + '_block-' + this._blockCount + '-' + this._blockLayerCount
 
     this.defs.push(this._element('g', {id: blockLayerId}, this._block))
 
@@ -13150,9 +13262,11 @@ PlotterToSvg.prototype._finishBlockLayer = function() {
   }
 }
 
-PlotterToSvg.prototype._finishClearLayer = function() {
+PlotterToSvg.prototype._finishClearLayer = function () {
   if (this._maskId) {
-    this.defs.push(createMask(this._maskId, this._maskBox, this._mask, this._element))
+    this.defs.push(
+      createMask(this._maskId, this._maskBox, this._mask, this._element)
+    )
     this._maskId = ''
     this._maskBox = []
     this._mask = []
@@ -13163,18 +13277,17 @@ PlotterToSvg.prototype._finishClearLayer = function() {
   return false
 }
 
-PlotterToSvg.prototype._handleNewPolarity = function(polarity, box) {
+PlotterToSvg.prototype._handleNewPolarity = function (polarity, box) {
   if (this._blockMode) {
-    if ((this._blockLayerCount === 0) && !this._block.length) {
-      this._blockMode = (polarity === 'dark')
-        ? BLOCK_MODE_DARK
-        : BLOCK_MODE_CLEAR
+    if (this._blockLayerCount === 0 && !this._block.length) {
+      this._blockMode = polarity === 'dark' ? BLOCK_MODE_DARK : BLOCK_MODE_CLEAR
     }
 
     return this._finishBlockLayer()
   }
 
-  this._clearCount = (polarity === 'clear') ? this._clearCount + 1 : this._clearCount
+  this._clearCount =
+    polarity === 'clear' ? this._clearCount + 1 : this._clearCount
   var maskId = this._id + '_clear-' + this._clearCount
 
   // if clear polarity, wrap the layer and start a mask
@@ -13182,15 +13295,14 @@ PlotterToSvg.prototype._handleNewPolarity = function(polarity, box) {
     this.layer = [maskLayer(maskId, this.layer, this._element)]
     this._maskId = maskId
     this._maskBox = box.slice(0)
-  }
-  // else, finish the mask and add it to the defs
-  else {
+  } else {
+    // else, finish the mask and add it to the defs
     this._finishClearLayer(box)
   }
 }
 
-PlotterToSvg.prototype._handleNewRepeat = function(offsets, box) {
-  var endOfBlock = (offsets.length === 0)
+PlotterToSvg.prototype._handleNewRepeat = function (offsets, box) {
+  var endOfBlock = offsets.length === 0
 
   // finish any in progress clear layer and block layer
   var wasClear = this._finishClearLayer()
@@ -13204,30 +13316,30 @@ PlotterToSvg.prototype._handleNewRepeat = function(offsets, box) {
   var blockIdStart = this._id + '_block-' + this._blockCount + '-'
 
   // add dark layers to layer
-  this._offsets.forEach(function(offset) {
+  this._offsets.forEach(function (offset) {
     for (var i = blockMode; i <= blockLayers; i += 2) {
-      layer.push(element('use', {
-        'xlink:href': '#' + blockIdStart + i,
-        x: shift(offset[0]),
-        y: shift(offset[1])
-      }))
+      layer.push(
+        element('use', {
+          'xlink:href': '#' + blockIdStart + i,
+          x: shift(offset[0]),
+          y: shift(offset[1])
+        })
+      )
     }
   })
 
   // if there are clear layers in the block, mask the layer with them
-  if (blockLayers > (2 - blockMode)) {
+  if (blockLayers > 2 - blockMode) {
     var maskId = blockIdStart + 'clear'
 
     this.layer = [maskLayer(maskId, layer, this._element)]
     this._maskId = maskId
     this._maskBox = this._blockBox.slice(0)
-    this._mask = this._offsets.reduce(function(result, offset) {
+    this._mask = this._offsets.reduce(function (result, offset) {
       var isDark
 
       for (var i = 1; i <= blockLayers; i++) {
-        isDark = (blockMode === BLOCK_MODE_DARK)
-          ? ((i % 2) === 1)
-          : ((i % 2) === 0)
+        isDark = blockMode === BLOCK_MODE_DARK ? i % 2 === 1 : i % 2 === 0
 
         var attr = {
           'xlink:href': '#' + blockIdStart + i,
@@ -13236,7 +13348,7 @@ PlotterToSvg.prototype._handleNewRepeat = function(offsets, box) {
         }
 
         if (isDark) {
-          attr.fill = '#fff',
+          attr.fill = '#fff'
           attr.stroke = '#fff'
         }
 
@@ -13252,17 +13364,16 @@ PlotterToSvg.prototype._handleNewRepeat = function(offsets, box) {
   // save the offsets
   this._offsets = offsets
   if (!endOfBlock) {
-    this._blockMode = (!wasClear) ? BLOCK_MODE_DARK : BLOCK_MODE_CLEAR
+    this._blockMode = !wasClear ? BLOCK_MODE_DARK : BLOCK_MODE_CLEAR
     this._blockCount++
     this._blockLayerCount = 0
     this._blockBox = box.every(isFinite) ? box : [0, 0, 0, 0]
-  }
-  else {
+  } else {
     this._blockMode = BLOCK_MODE_OFF
   }
 }
 
-PlotterToSvg.prototype._handleSize = function(box, units) {
+PlotterToSvg.prototype._handleSize = function (box, units) {
   if (box.every(isFinite)) {
     var x = shift(box[0])
     var y = shift(box[1])
@@ -13270,39 +13381,38 @@ PlotterToSvg.prototype._handleSize = function(box, units) {
     var height = shift(box[3] - box[1])
 
     this.viewBox = [x, y, width, height]
-    this.width = (width / 1000)
-    this.height = (height / 1000)
+    this.width = width / 1000
+    this.height = height / 1000
     this.units = units
   }
 }
 
-PlotterToSvg.prototype._draw = function(object) {
+PlotterToSvg.prototype._draw = function (object) {
   if (!this._blockMode) {
     if (!this._maskId) {
       this.layer.push(object)
-    }
-    else {
+    } else {
       this._mask.push(object)
     }
-  }
-  else {
+  } else {
     this._block.push(object)
   }
 }
 
 module.exports = PlotterToSvg
 
-},{"./_create-path":356,"./_flash-pad":357,"./_reduce-shape":358,"./_util":359,"./render":363,"inherits":366,"lodash.isfinite":431,"readable-stream":473}],363:[function(require,module,exports){
+},{"./_create-path":356,"./_flash-pad":357,"./_reduce-shape":358,"./_util":359,"./render":363,"inherits":366,"lodash.isfinite":431,"readable-stream":474}],363:[function(require,module,exports){
 // render a completed PlotterToSvg object
 'use strict'
 
 var xmlElementString = require('xml-element-string')
 
-module.exports = function(converter, attr, createElement, includeNamespace) {
+module.exports = function (converter, attr, createElement, includeNamespace) {
   var element = createElement || xmlElementString
-  var namespace = (includeNamespace == null || includeNamespace === true)
-    ? 'http://www.w3.org/2000/svg'
-    : null
+  var namespace =
+    includeNamespace == null || includeNamespace === true
+      ? 'http://www.w3.org/2000/svg'
+      : null
 
   var attributes = {
     xmlns: namespace,
@@ -13317,7 +13427,7 @@ module.exports = function(converter, attr, createElement, includeNamespace) {
     viewBox: converter.viewBox.join(' ')
   }
 
-  Object.keys(attr || {}).forEach(function(key) {
+  Object.keys(attr || {}).forEach(function (key) {
     var value = attr[key]
 
     if (value != null) {
@@ -13335,11 +13445,17 @@ module.exports = function(converter, attr, createElement, includeNamespace) {
     var yTranslate = converter.viewBox[3] + 2 * converter.viewBox[1]
     var transform = 'translate(0,' + yTranslate + ') scale(1,-1)'
 
-    children.push(element('g', {
-      transform: transform,
-      fill: 'currentColor',
-      stroke: 'currentColor'
-    }, converter.layer))
+    children.push(
+      element(
+        'g',
+        {
+          transform: transform,
+          fill: 'currentColor',
+          stroke: 'currentColor'
+        },
+        converter.layer
+      )
+    )
   }
 
   return element('svg', attributes, children)
@@ -13530,8 +13646,6 @@ if (typeof Object.create === 'function') {
 }
 
 },{}],367:[function(require,module,exports){
-'use strict';
-
 module.exports = function isArrayish(obj) {
 	if (!obj || typeof obj === 'string') {
 		return false;
@@ -13973,7 +14087,7 @@ exports.uncompressWorker = function () {
     return new FlateWorker("Inflate", {});
 };
 
-},{"./stream/GenericWorker":397,"./utils":401,"pako":437}],377:[function(require,module,exports){
+},{"./stream/GenericWorker":397,"./utils":401,"pako":438}],377:[function(require,module,exports){
 'use strict';
 
 var utils = require('../utils');
@@ -19690,6 +19804,56 @@ function repeat(string, n) {
 module.exports = repeat;
 
 },{"lodash._root":429}],437:[function(require,module,exports){
+/**
+ * Secure random string generator with custom alphabet.
+ *
+ * Alphabet must contain 256 symbols or less. Otherwise, the generator
+ * will not be secure.
+ *
+ * @param {generator} random The random bytes generator.
+ * @param {string} alphabet Symbols to be used in new random string.
+ * @param {size} size The number of symbols in new random string.
+ *
+ * @return {string} Random string.
+ *
+ * @example
+ * var format = require('nanoid/format')
+ *
+ * function random (size) {
+ *   var result = []
+ *   for (var i = 0; i < size; i++) result.push(randomByte())
+ *   return result
+ * }
+ *
+ * format(random, "abcdef", 5) //=> "fbaef"
+ *
+ * @name format
+ * @function
+ */
+module.exports = function (random, alphabet, size) {
+  var mask = (2 << Math.log(alphabet.length - 1) / Math.LN2) - 1
+  var step = Math.ceil(1.6 * mask * size / alphabet.length)
+
+  var id = ''
+  while (true) {
+    var bytes = random(step)
+    for (var i = 0; i < step; i++) {
+      var byte = bytes[i] & mask
+      if (alphabet[byte]) {
+        id += alphabet[byte]
+        if (id.length === size) return id
+      }
+    }
+  }
+}
+
+/**
+ * @callback generator
+ * @param {number} bytes The number of bytes to generate.
+ * @return {number[]} Random bytes.
+ */
+
+},{}],438:[function(require,module,exports){
 // Top level file is just a mixin of submodules & constants
 'use strict';
 
@@ -19705,7 +19869,7 @@ assign(pako, deflate, inflate, constants);
 
 module.exports = pako;
 
-},{"./lib/deflate":438,"./lib/inflate":439,"./lib/utils/common":440,"./lib/zlib/constants":443}],438:[function(require,module,exports){
+},{"./lib/deflate":439,"./lib/inflate":440,"./lib/utils/common":441,"./lib/zlib/constants":444}],439:[function(require,module,exports){
 'use strict';
 
 
@@ -20107,7 +20271,7 @@ exports.deflate = deflate;
 exports.deflateRaw = deflateRaw;
 exports.gzip = gzip;
 
-},{"./utils/common":440,"./utils/strings":441,"./zlib/deflate":445,"./zlib/messages":450,"./zlib/zstream":452}],439:[function(require,module,exports){
+},{"./utils/common":441,"./utils/strings":442,"./zlib/deflate":446,"./zlib/messages":451,"./zlib/zstream":453}],440:[function(require,module,exports){
 'use strict';
 
 
@@ -20527,7 +20691,7 @@ exports.inflate = inflate;
 exports.inflateRaw = inflateRaw;
 exports.ungzip  = inflate;
 
-},{"./utils/common":440,"./utils/strings":441,"./zlib/constants":443,"./zlib/gzheader":446,"./zlib/inflate":448,"./zlib/messages":450,"./zlib/zstream":452}],440:[function(require,module,exports){
+},{"./utils/common":441,"./utils/strings":442,"./zlib/constants":444,"./zlib/gzheader":447,"./zlib/inflate":449,"./zlib/messages":451,"./zlib/zstream":453}],441:[function(require,module,exports){
 'use strict';
 
 
@@ -20634,7 +20798,7 @@ exports.setTyped = function (on) {
 
 exports.setTyped(TYPED_OK);
 
-},{}],441:[function(require,module,exports){
+},{}],442:[function(require,module,exports){
 // String encode/decode helpers
 'use strict';
 
@@ -20821,7 +20985,7 @@ exports.utf8border = function (buf, max) {
   return (pos + _utf8len[buf[pos]] > max) ? pos : max;
 };
 
-},{"./common":440}],442:[function(require,module,exports){
+},{"./common":441}],443:[function(require,module,exports){
 'use strict';
 
 // Note: adler32 takes 12% for level 0 and 2% for level 6.
@@ -20874,7 +21038,7 @@ function adler32(adler, buf, len, pos) {
 
 module.exports = adler32;
 
-},{}],443:[function(require,module,exports){
+},{}],444:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -20944,7 +21108,7 @@ module.exports = {
   //Z_NULL:                 null // Use -1 or null inline, depending on var type
 };
 
-},{}],444:[function(require,module,exports){
+},{}],445:[function(require,module,exports){
 'use strict';
 
 // Note: we can't get significant speed boost here.
@@ -21005,7 +21169,7 @@ function crc32(crc, buf, len, pos) {
 
 module.exports = crc32;
 
-},{}],445:[function(require,module,exports){
+},{}],446:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -22881,7 +23045,7 @@ exports.deflatePrime = deflatePrime;
 exports.deflateTune = deflateTune;
 */
 
-},{"../utils/common":440,"./adler32":442,"./crc32":444,"./messages":450,"./trees":451}],446:[function(require,module,exports){
+},{"../utils/common":441,"./adler32":443,"./crc32":445,"./messages":451,"./trees":452}],447:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -22941,7 +23105,7 @@ function GZheader() {
 
 module.exports = GZheader;
 
-},{}],447:[function(require,module,exports){
+},{}],448:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -23288,7 +23452,7 @@ module.exports = function inflate_fast(strm, start) {
   return;
 };
 
-},{}],448:[function(require,module,exports){
+},{}],449:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -24846,7 +25010,7 @@ exports.inflateSyncPoint = inflateSyncPoint;
 exports.inflateUndermine = inflateUndermine;
 */
 
-},{"../utils/common":440,"./adler32":442,"./crc32":444,"./inffast":447,"./inftrees":449}],449:[function(require,module,exports){
+},{"../utils/common":441,"./adler32":443,"./crc32":445,"./inffast":448,"./inftrees":450}],450:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -25191,7 +25355,7 @@ module.exports = function inflate_table(type, lens, lens_index, codes, table, ta
   return 0;
 };
 
-},{"../utils/common":440}],450:[function(require,module,exports){
+},{"../utils/common":441}],451:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -25225,7 +25389,7 @@ module.exports = {
   '-6':   'incompatible version' /* Z_VERSION_ERROR (-6) */
 };
 
-},{}],451:[function(require,module,exports){
+},{}],452:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -26447,7 +26611,7 @@ exports._tr_flush_block  = _tr_flush_block;
 exports._tr_tally = _tr_tally;
 exports._tr_align = _tr_align;
 
-},{"../utils/common":440}],452:[function(require,module,exports){
+},{"../utils/common":441}],453:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -26496,7 +26660,7 @@ function ZStream() {
 
 module.exports = ZStream;
 
-},{}],453:[function(require,module,exports){
+},{}],454:[function(require,module,exports){
 // function to generate a board style node
 'use strict'
 var colorString = require('color-string')
@@ -26524,7 +26688,7 @@ module.exports = function boardStyle (element, prefix, side, layerColors) {
       var rgba = colorString.get.rgb(colors[layer])
 
       if (rgba) {
-        var hex = colorString.to.hex(rgba)
+        var hex = colorString.to.hex(rgba).slice(0, 7)
 
         style = 'color: ' + hex + '; opacity: ' + rgba[3] + ';'
       }
@@ -26548,7 +26712,7 @@ module.exports = function boardStyle (element, prefix, side, layerColors) {
   return element('style', {}, [stylesString])
 }
 
-},{"color-string":7}],454:[function(require,module,exports){
+},{"color-string":7}],455:[function(require,module,exports){
 // helper for stack layers that scales, wraps, gathers the defs of layers
 'use strict'
 
@@ -26557,18 +26721,21 @@ var viewbox = require('viewbox')
 var wrapLayer = require('./wrap-layer')
 
 var getScale = function (units, layerUnits) {
-  var scale = units === 'in'
-    ? 1 / 25.4
-    : 25.4
+  var scale = units === 'in' ? 1 / 25.4 : 25.4
 
-  var result = units === layerUnits
-    ? 1
-    : scale
+  var result = units === layerUnits ? 1 : scale
 
   return result
 }
 
-module.exports = function (element, idPrefix, layers, drills, outline, maskWithOutline) {
+module.exports = function (
+  element,
+  idPrefix,
+  layers,
+  drills,
+  outline,
+  maskWithOutline
+) {
   var defs = []
   var layerIds = []
   var drillIds = []
@@ -26578,9 +26745,7 @@ module.exports = function (element, idPrefix, layers, drills, outline, maskWithO
 
   var drillCount = 0
   var getUniqueId = function (type) {
-    var idSuffix = (type !== 'drl')
-      ? ''
-      : ++drillCount
+    var idSuffix = type !== 'drl' ? '' : ++drillCount
 
     return idPrefix + type + idSuffix
   }
@@ -26598,10 +26763,10 @@ module.exports = function (element, idPrefix, layers, drills, outline, maskWithO
   })
 
   if (unitsCount.in + unitsCount.mm) {
-    units = (unitsCount.in > unitsCount.mm) ? 'in' : 'mm'
+    units = unitsCount.in > unitsCount.mm ? 'in' : 'mm'
   }
 
-  var viewboxLayers = (outline) ? [outline] : allLayers
+  var viewboxLayers = outline ? [outline] : allLayers
   var box = viewboxLayers.reduce(function (result, layer) {
     var nextBox = layer.converter.viewBox
 
@@ -26617,7 +26782,9 @@ module.exports = function (element, idPrefix, layers, drills, outline, maskWithO
 
       if (!id) {
         id = getUniqueId(layer.type)
-        defs.push(wrapLayer(element, id, converter, getScale(units, converter.units)))
+        defs.push(
+          wrapLayer(element, id, converter, getScale(units, converter.units))
+        )
       }
 
       collection.push({type: layer.type, id: id})
@@ -26636,12 +26803,15 @@ module.exports = function (element, idPrefix, layers, drills, outline, maskWithO
     } else {
       outlineId = getUniqueId(outline.type)
 
-      defs.push(wrapLayer(
-        element,
-        outlineId,
-        outline.converter,
-        getScale(units, outline.converter.units),
-        maskWithOutline ? 'clipPath' : 'g'))
+      defs.push(
+        wrapLayer(
+          element,
+          outlineId,
+          outline.converter,
+          getScale(units, outline.converter.units),
+          maskWithOutline ? 'clipPath' : 'g'
+        )
+      )
     }
   }
 
@@ -26655,7 +26825,7 @@ module.exports = function (element, idPrefix, layers, drills, outline, maskWithO
   }
 }
 
-},{"./wrap-layer":458,"viewbox":498}],455:[function(require,module,exports){
+},{"./wrap-layer":459,"viewbox":498}],456:[function(require,module,exports){
 // main pcb stackup function
 'use strict'
 
@@ -26669,8 +26839,8 @@ var boardStyle = require('./_board-style')
 var SIDES = ['top', 'bottom']
 
 var svgAttributes = function (id, side, box, units, includeNs, attributes) {
-  var width = (box[2] / 1000) + units
-  var height = (box[3] / 1000) + units
+  var width = box[2] / 1000 + units
+  var height = box[3] / 1000 + units
 
   var attr = {
     id: id + '_' + side,
@@ -26744,6 +26914,7 @@ module.exports = function pcbStackupCore (layers, opts) {
 
   return SIDES.reduce(function (result, side) {
     var style = boardStyle(element, id + '_', side, color)
+
     var stack = stackLayers(
       element,
       id,
@@ -26751,15 +26922,20 @@ module.exports = function pcbStackupCore (layers, opts) {
       sorted[side],
       sorted.drills,
       sorted.outline,
-      maskWithOutline)
+      maskWithOutline
+    )
 
     var units = stack.units
     var mechMaskId = stack.mechMaskId
     var outClipId = stack.outClipId
-    var box = (stack.box.length === 4) ? stack.box : [0, 0, 0, 0]
+    var box = stack.box.length === 4 ? stack.box : [0, 0, 0, 0]
     var defs = [style].concat(stack.defs)
     var layer = [
-      element('g', groupAttributes(box, side, mechMaskId, outClipId), stack.layer)
+      element(
+        'g',
+        groupAttributes(box, side, mechMaskId, outClipId),
+        stack.layer
+      )
     ]
 
     var defsNode = element('defs', {}, defs)
@@ -26770,7 +26946,8 @@ module.exports = function pcbStackupCore (layers, opts) {
       box,
       units,
       includeNamespace,
-      attributes)
+      attributes
+    )
 
     result[side] = {
       svg: element('svg', svgAttr, [defsNode, layerNode]),
@@ -26786,40 +26963,43 @@ module.exports = function pcbStackupCore (layers, opts) {
   }, {})
 }
 
-},{"./_board-style":453,"./sort-layers":456,"./stack-layers":457,"lodash.isstring":433,"xml-element-string":500}],456:[function(require,module,exports){
+},{"./_board-style":454,"./sort-layers":457,"./stack-layers":458,"lodash.isstring":433,"xml-element-string":500}],457:[function(require,module,exports){
 // sort layers array into top and bottom
 'use strict'
 
 module.exports = function sortLayers (layers) {
-  return layers.reduce(function (result, layer) {
-    var type = layer.type
-    var side = type[0]
-    var subtype = type.slice(1)
-    var externalId = layer.externalId
+  return layers.reduce(
+    function (result, layer) {
+      var type = layer.type
+      var side = type[0]
+      var subtype = type.slice(1)
+      var externalId = layer.externalId
 
-    if (type === 'drl') {
-      result.drills.push(layer)
-    } else if (type === 'out') {
-      result.outline = layer
-    } else {
-      layer = {type: subtype, converter: layer.converter}
+      if (type === 'drl') {
+        result.drills.push(layer)
+      } else if (type === 'out') {
+        result.outline = layer
+      } else {
+        layer = {type: subtype, converter: layer.converter}
 
-      if (externalId) {
-        layer.externalId = externalId
+        if (externalId) {
+          layer.externalId = externalId
+        }
+
+        if (side === 't') {
+          result.top.push(layer)
+        } else if (side === 'b') {
+          result.bottom.push(layer)
+        }
       }
 
-      if (side === 't') {
-        result.top.push(layer)
-      } else if (side === 'b') {
-        result.bottom.push(layer)
-      }
-    }
-
-    return result
-  }, {top: [], bottom: [], drills: [], outline: null})
+      return result
+    },
+    {top: [], bottom: [], drills: [], outline: null}
+  )
 }
 
-},{}],457:[function(require,module,exports){
+},{}],458:[function(require,module,exports){
 // stack layers function (where the magic happens)
 'use strict'
 
@@ -26882,12 +27062,27 @@ var mechMask = function (element, id, box, drills) {
   return element('mask', {id: id}, group)
 }
 
-module.exports = function (element, id, side, layers, drills, outline, useOutline) {
+module.exports = function (
+  element,
+  id,
+  side,
+  layers,
+  drills,
+  outline,
+  useOutline
+) {
   var classPrefix = id + '_'
   var idPrefix = id + '_' + side + '_'
   var mechMaskId = idPrefix + 'mech-mask'
 
-  var layerProps = gatherLayers(element, idPrefix, layers, drills, outline, useOutline)
+  var layerProps = gatherLayers(
+    element,
+    idPrefix,
+    layers,
+    drills,
+    outline,
+    useOutline
+  )
   var defs = layerProps.defs
   var box = layerProps.box
   var units = layerProps.units
@@ -26935,7 +27130,9 @@ module.exports = function (element, id, side, layers, drills, outline, useOutlin
 
     // add the layer that gets masked
     var smGroupAttr = {mask: 'url(#' + smMaskId + ')'}
-    var smGroupShape = [createRect(element, box, 'currentColor', classPrefix + 'sm')]
+    var smGroupShape = [
+      createRect(element, box, 'currentColor', classPrefix + 'sm')
+    ]
 
     if (ssLayerId) {
       smGroupShape.push(useLayer(element, ssLayerId, classPrefix + 'ss'))
@@ -26958,13 +27155,13 @@ module.exports = function (element, id, side, layers, drills, outline, useOutlin
     defs: defs,
     layer: layer,
     mechMaskId: mechMaskId,
-    outClipId: (outLayerId && useOutline) ? outLayerId : null,
+    outClipId: outLayerId && useOutline ? outLayerId : null,
     box: box,
     units: units
   }
 }
 
-},{"./_gather-layers":454,"viewbox":498}],458:[function(require,module,exports){
+},{"./_gather-layers":455,"viewbox":498}],459:[function(require,module,exports){
 // wrap a layer in a group given the layer's converter object
 'use strict'
 
@@ -26972,14 +27169,14 @@ module.exports = function wrapLayer (element, id, converter, scale, tag) {
   var layer = converter.layer
   var attr = {id: id}
 
-  if (scale && (scale !== 1)) {
+  if (scale && scale !== 1) {
     attr.transform = 'scale(' + scale + ',' + scale + ')'
   }
 
   return element(tag || 'g', attr, layer)
 }
 
-},{}],459:[function(require,module,exports){
+},{}],460:[function(require,module,exports){
 // pcb-stackup main
 'use strict'
 
@@ -26987,6 +27184,7 @@ var gerberToSvg = require('gerber-to-svg')
 var shortId = require('shortid')
 var whatsThatGerber = require('whats-that-gerber')
 var createStackup = require('pcb-stackup-core')
+var extend = require('xtend')
 
 var getInvalidLayers = function (layers) {
   var hasNameOrType = function (layer) {
@@ -27000,22 +27198,27 @@ var getInvalidLayers = function (layers) {
     return whatsThatGerber.isValidType(layer.type)
   }
 
-  return layers.reduce(function (result, layer, i) {
-    if (!hasNameOrType(layer)) {
-      result.argErrors.push(i)
-    }
+  return layers.reduce(
+    function (result, layer, i) {
+      if (!hasNameOrType(layer)) {
+        result.argErrors.push(i)
+      }
 
-    if (!hasValidType(layer)) {
-      result.typeErrors.push(i + ': "' + layer.type + '"')
-    }
+      if (!hasValidType(layer)) {
+        result.typeErrors.push(i + ': "' + layer.type + '"')
+      }
 
-    return result
-  }, {argErrors: [], typeErrors: []})
+      return result
+    },
+    {argErrors: [], typeErrors: []}
+  )
 }
 
 var pcbStackup = function (layers, options, done) {
   if (typeof options === 'function') {
     done = options
+    options = {}
+  } else if (options == null) {
     options = {}
   }
 
@@ -27023,13 +27226,17 @@ var pcbStackup = function (layers, options, done) {
   var msg
 
   if (invalidLayers.argErrors.length) {
-    msg = 'No filename or type given for layer(s): ' + invalidLayers.argErrors.join(', ')
+    msg =
+      'No filename or type given for layer(s): ' +
+      invalidLayers.argErrors.join(', ')
 
     return done(new Error(msg))
   }
 
   if (invalidLayers.typeErrors.length) {
-    msg = 'Invalid layer type given for layer(s): ' + invalidLayers.typeErrors.join(', ')
+    msg =
+      'Invalid layer type given for layer(s): ' +
+      invalidLayers.typeErrors.join(', ')
 
     return done(new Error(msg))
   }
@@ -27066,10 +27273,11 @@ var pcbStackup = function (layers, options, done) {
 
   layers.forEach(function (layer) {
     var layerType = layer.type || whatsThatGerber(layer.filename)
-    var layerOptions = layer.options || {}
+    var layerOptions = extend(layer.options)
 
     layerOptions.id = layerOptions.id || shortId.generate()
-    layerOptions.plotAsOutline = layerOptions.plotAsOutline || (layerType === 'out')
+    layerOptions.plotAsOutline =
+      layerOptions.plotAsOutline || layerType === 'out'
 
     if (options.outlineGapFill != null && layerOptions.plotAsOutline) {
       layerOptions.plotAsOutline = options.outlineGapFill
@@ -27086,6 +27294,7 @@ var pcbStackup = function (layers, options, done) {
 
     stackupLayers.push({
       type: layerType,
+      filename: layer.filename,
       converter: converter,
       options: layerOptions
     })
@@ -27098,7 +27307,7 @@ var pcbStackup = function (layers, options, done) {
 
 module.exports = pcbStackup
 
-},{"gerber-to-svg":361,"pcb-stackup-core":455,"shortid":478,"whats-that-gerber":499}],460:[function(require,module,exports){
+},{"gerber-to-svg":361,"pcb-stackup-core":456,"shortid":479,"whats-that-gerber":499,"xtend":501}],461:[function(require,module,exports){
 (function (process){
 'use strict';
 
@@ -27146,7 +27355,7 @@ function nextTick(fn, arg1, arg2, arg3) {
 
 
 }).call(this,require('_process'))
-},{"_process":461}],461:[function(require,module,exports){
+},{"_process":462}],462:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -27332,10 +27541,10 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],462:[function(require,module,exports){
+},{}],463:[function(require,module,exports){
 module.exports = require('./lib/_stream_duplex.js');
 
-},{"./lib/_stream_duplex.js":463}],463:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":464}],464:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -27467,7 +27676,7 @@ Duplex.prototype._destroy = function (err, cb) {
 
   pna.nextTick(cb, err);
 };
-},{"./_stream_readable":465,"./_stream_writable":467,"core-util-is":333,"inherits":366,"process-nextick-args":460}],464:[function(require,module,exports){
+},{"./_stream_readable":466,"./_stream_writable":468,"core-util-is":333,"inherits":366,"process-nextick-args":461}],465:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -27515,7 +27724,7 @@ function PassThrough(options) {
 PassThrough.prototype._transform = function (chunk, encoding, cb) {
   cb(null, chunk);
 };
-},{"./_stream_transform":466,"core-util-is":333,"inherits":366}],465:[function(require,module,exports){
+},{"./_stream_transform":467,"core-util-is":333,"inherits":366}],466:[function(require,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -28537,7 +28746,7 @@ function indexOf(xs, x) {
   return -1;
 }
 }).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./_stream_duplex":463,"./internal/streams/BufferList":468,"./internal/streams/destroy":469,"./internal/streams/stream":470,"_process":461,"core-util-is":333,"events":335,"inherits":366,"isarray":369,"process-nextick-args":460,"safe-buffer":477,"string_decoder/":471,"util":4}],466:[function(require,module,exports){
+},{"./_stream_duplex":464,"./internal/streams/BufferList":469,"./internal/streams/destroy":470,"./internal/streams/stream":471,"_process":462,"core-util-is":333,"events":335,"inherits":366,"isarray":369,"process-nextick-args":461,"safe-buffer":478,"string_decoder/":472,"util":4}],467:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -28752,7 +28961,7 @@ function done(stream, er, data) {
 
   return stream.push(null);
 }
-},{"./_stream_duplex":463,"core-util-is":333,"inherits":366}],467:[function(require,module,exports){
+},{"./_stream_duplex":464,"core-util-is":333,"inherits":366}],468:[function(require,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -29442,7 +29651,7 @@ Writable.prototype._destroy = function (err, cb) {
   cb(err);
 };
 }).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./_stream_duplex":463,"./internal/streams/destroy":469,"./internal/streams/stream":470,"_process":461,"core-util-is":333,"inherits":366,"process-nextick-args":460,"safe-buffer":477,"util-deprecate":497}],468:[function(require,module,exports){
+},{"./_stream_duplex":464,"./internal/streams/destroy":470,"./internal/streams/stream":471,"_process":462,"core-util-is":333,"inherits":366,"process-nextick-args":461,"safe-buffer":478,"util-deprecate":497}],469:[function(require,module,exports){
 'use strict';
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
@@ -29522,7 +29731,7 @@ if (util && util.inspect && util.inspect.custom) {
     return this.constructor.name + ' ' + obj;
   };
 }
-},{"safe-buffer":477,"util":4}],469:[function(require,module,exports){
+},{"safe-buffer":478,"util":4}],470:[function(require,module,exports){
 'use strict';
 
 /*<replacement>*/
@@ -29597,10 +29806,10 @@ module.exports = {
   destroy: destroy,
   undestroy: undestroy
 };
-},{"process-nextick-args":460}],470:[function(require,module,exports){
+},{"process-nextick-args":461}],471:[function(require,module,exports){
 module.exports = require('events').EventEmitter;
 
-},{"events":335}],471:[function(require,module,exports){
+},{"events":335}],472:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -29897,10 +30106,10 @@ function simpleWrite(buf) {
 function simpleEnd(buf) {
   return buf && buf.length ? this.write(buf) : '';
 }
-},{"safe-buffer":477}],472:[function(require,module,exports){
+},{"safe-buffer":478}],473:[function(require,module,exports){
 module.exports = require('./readable').PassThrough
 
-},{"./readable":473}],473:[function(require,module,exports){
+},{"./readable":474}],474:[function(require,module,exports){
 exports = module.exports = require('./lib/_stream_readable.js');
 exports.Stream = exports;
 exports.Readable = exports;
@@ -29909,13 +30118,13 @@ exports.Duplex = require('./lib/_stream_duplex.js');
 exports.Transform = require('./lib/_stream_transform.js');
 exports.PassThrough = require('./lib/_stream_passthrough.js');
 
-},{"./lib/_stream_duplex.js":463,"./lib/_stream_passthrough.js":464,"./lib/_stream_readable.js":465,"./lib/_stream_transform.js":466,"./lib/_stream_writable.js":467}],474:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":464,"./lib/_stream_passthrough.js":465,"./lib/_stream_readable.js":466,"./lib/_stream_transform.js":467,"./lib/_stream_writable.js":468}],475:[function(require,module,exports){
 module.exports = require('./readable').Transform
 
-},{"./readable":473}],475:[function(require,module,exports){
+},{"./readable":474}],476:[function(require,module,exports){
 module.exports = require('./lib/_stream_writable.js');
 
-},{"./lib/_stream_writable.js":467}],476:[function(require,module,exports){
+},{"./lib/_stream_writable.js":468}],477:[function(require,module,exports){
 (function (global){
 /**
  * Copyright (c) 2014, Facebook, Inc.
@@ -30655,7 +30864,7 @@ module.exports = require('./lib/_stream_writable.js');
 );
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],477:[function(require,module,exports){
+},{}],478:[function(require,module,exports){
 /* eslint-disable node/no-deprecated-api */
 var buffer = require('buffer')
 var Buffer = buffer.Buffer
@@ -30719,11 +30928,11 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   return buffer.SlowBuffer(size)
 }
 
-},{"buffer":5}],478:[function(require,module,exports){
+},{"buffer":5}],479:[function(require,module,exports){
 'use strict';
 module.exports = require('./lib/index');
 
-},{"./lib/index":483}],479:[function(require,module,exports){
+},{"./lib/index":483}],480:[function(require,module,exports){
 'use strict';
 
 var randomFromSeed = require('./random/random-from-seed');
@@ -30816,17 +31025,22 @@ function lookup(index) {
     return alphabetShuffled[index];
 }
 
+function get () {
+  return alphabet || ORIGINAL;
+}
+
 module.exports = {
+    get: get,
     characters: characters,
     seed: setSeed,
     lookup: lookup,
     shuffled: getShuffled
 };
 
-},{"./random/random-from-seed":486}],480:[function(require,module,exports){
+},{"./random/random-from-seed":486}],481:[function(require,module,exports){
 'use strict';
 
-var encode = require('./encode');
+var generate = require('./generate');
 var alphabet = require('./alphabet');
 
 // Ignore all milliseconds before a certain time to reduce the size of the date entropy without sacrificing uniqueness.
@@ -30849,7 +31063,6 @@ var previousSeconds;
  * Returns string id
  */
 function build(clusterWorkerId) {
-
     var str = '';
 
     var seconds = Math.floor((Date.now() - REDUCE_TIME) * 0.001);
@@ -30861,64 +31074,44 @@ function build(clusterWorkerId) {
         previousSeconds = seconds;
     }
 
-    str = str + encode(alphabet.lookup, version);
-    str = str + encode(alphabet.lookup, clusterWorkerId);
+    str = str + generate(version);
+    str = str + generate(clusterWorkerId);
     if (counter > 0) {
-        str = str + encode(alphabet.lookup, counter);
+        str = str + generate(counter);
     }
-    str = str + encode(alphabet.lookup, seconds);
-
+    str = str + generate(seconds);
     return str;
 }
 
 module.exports = build;
 
-},{"./alphabet":479,"./encode":482}],481:[function(require,module,exports){
+},{"./alphabet":480,"./generate":482}],482:[function(require,module,exports){
 'use strict';
+
 var alphabet = require('./alphabet');
+var random = require('./random/random-byte');
+var format = require('nanoid/format');
 
-/**
- * Decode the id to get the version and worker
- * Mainly for debugging and testing.
- * @param id - the shortid-generated id.
- */
-function decode(id) {
-    var characters = alphabet.shuffled();
-    return {
-        version: characters.indexOf(id.substr(0, 1)) & 0x0f,
-        worker: characters.indexOf(id.substr(1, 1)) & 0x0f
-    };
-}
-
-module.exports = decode;
-
-},{"./alphabet":479}],482:[function(require,module,exports){
-'use strict';
-
-var randomByte = require('./random/random-byte');
-
-function encode(lookup, number) {
+function generate(number) {
     var loopCounter = 0;
     var done;
 
     var str = '';
 
     while (!done) {
-        str = str + lookup( ( (number >> (4 * loopCounter)) & 0x0f ) | randomByte() );
+        str = str + format(random, alphabet.get(), 1);
         done = number < (Math.pow(16, loopCounter + 1 ) );
         loopCounter++;
     }
     return str;
 }
 
-module.exports = encode;
+module.exports = generate;
 
-},{"./random/random-byte":485}],483:[function(require,module,exports){
+},{"./alphabet":480,"./random/random-byte":485,"nanoid/format":437}],483:[function(require,module,exports){
 'use strict';
 
 var alphabet = require('./alphabet');
-var encode = require('./encode');
-var decode = require('./decode');
 var build = require('./build');
 var isValid = require('./is-valid');
 
@@ -30977,10 +31170,9 @@ module.exports.generate = generate;
 module.exports.seed = seed;
 module.exports.worker = worker;
 module.exports.characters = characters;
-module.exports.decode = decode;
 module.exports.isValid = isValid;
 
-},{"./alphabet":479,"./build":480,"./decode":481,"./encode":482,"./is-valid":484,"./util/cluster-worker-id":487}],484:[function(require,module,exports){
+},{"./alphabet":480,"./build":481,"./is-valid":484,"./util/cluster-worker-id":487}],484:[function(require,module,exports){
 'use strict';
 var alphabet = require('./alphabet');
 
@@ -30989,30 +31181,33 @@ function isShortId(id) {
         return false;
     }
 
-    var characters = alphabet.characters();
-    var len = id.length;
-    for(var i = 0; i < len;i++) {
-        if (characters.indexOf(id[i]) === -1) {
-            return false;
-        }
-    }
-    return true;
+    var nonAlphabetic = new RegExp('[^' +
+      alphabet.get().replace(/[|\\{}()[\]^$+*?.-]/g, '\\$&') +
+    ']');
+    return !nonAlphabetic.test(id);
 }
 
 module.exports = isShortId;
 
-},{"./alphabet":479}],485:[function(require,module,exports){
+},{"./alphabet":480}],485:[function(require,module,exports){
 'use strict';
 
 var crypto = typeof window === 'object' && (window.crypto || window.msCrypto); // IE 11 uses window.msCrypto
 
-function randomByte() {
-    if (!crypto || !crypto.getRandomValues) {
-        return Math.floor(Math.random() * 256) & 0x30;
-    }
-    var dest = new Uint8Array(1);
-    crypto.getRandomValues(dest);
-    return dest[0] & 0x30;
+var randomByte;
+
+if (!crypto || !crypto.getRandomValues) {
+    randomByte = function(size) {
+        var bytes = [];
+        for (var i = 0; i < size; i++) {
+            bytes.push(Math.floor(Math.random() * 256));
+        }
+        return bytes;
+    };
+} else {
+    randomByte = function(size) {
+        return crypto.getRandomValues(new Uint8Array(size));
+    };
 }
 
 module.exports = randomByte;
@@ -31209,7 +31404,7 @@ Stream.prototype.pipe = function(dest, options) {
   return dest;
 };
 
-},{"events":335,"inherits":366,"readable-stream/duplex.js":462,"readable-stream/passthrough.js":472,"readable-stream/readable.js":473,"readable-stream/transform.js":474,"readable-stream/writable.js":475}],490:[function(require,module,exports){
+},{"events":335,"inherits":366,"readable-stream/duplex.js":463,"readable-stream/passthrough.js":473,"readable-stream/readable.js":474,"readable-stream/transform.js":475,"readable-stream/writable.js":476}],490:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -33428,7 +33623,7 @@ module.exports = {
 
 // TODO: replace with Array.find once 0.10 support can be dropped
 // https://github.com/nodejs/LTS#lts-schedule
-var find = function(collection, predicate) {
+var find = function (collection, predicate) {
   var i
   var element
 
@@ -33447,77 +33642,77 @@ var layerTypes = [
     name: {
       en: 'top copper'
     },
-    match: /((F.Cu)|(top\.gbr))|(\.((cmp)|(top$)|(gtl)))|(\.toplayer\.ger)/i
+    match: /((F.Cu)|(copper_top)|(\.top\.gbr$))|(\.((cmp$)|(top$)|(gtl$)))|(\.toplayer\.ger$)|(top copper\.txt$)/i
   },
   {
     id: 'tsm',
     name: {
       en: 'top soldermask'
     },
-    match: /((F.Mask)|(topmask))|(\.((stc)|(tsm)|(gts)|(smt)))|(\.topsoldermask\.ger)/i
+    match: /((F.Mask)|(soldermask_top)|(topmask))|(\.((stc$)|(tsm$)|(gts$)|(smt$)))|(\.topsoldermask\.ger$)|(top solder resist\.txt$)/i
   },
   {
     id: 'tss',
     name: {
       en: 'top silkscreen'
     },
-    match: /((F.SilkS)|(topsilk))|(\.((plc)|(tsk)|(gto)|(sst)))|(\.topsilkscreen\.ger)/i
+    match: /((F.SilkS)|(silkscreen_top)|(topsilk))|(\.((plc$)|(tsk$)|(gto$)|(sst$)))|(\.topsilkscreen\.ger$)|(top silk screen\.txt$)/i
   },
   {
     id: 'tsp',
     name: {
       en: 'top solderpaste'
     },
-    match: /((F.Paste)|(toppaste))|(\.((crc)|(tsp)|(gtp)|(spt)))|(\.tcream\.ger)/i
+    match: /((F.Paste)|(solderpaste_top)|(toppaste))|(\.((crc$)|(tsp$)|(gtp$)|(spt$)))|(\.tcream\.ger$)/i
   },
   {
     id: 'bcu',
     name: {
       en: 'bottom copper'
     },
-    match: /(B.Cu|bottom\.gbr)|(\.((sol)|(bot$)|(gbl)))|(\.bottomlayer\.ger)/i
+    match: /(B.Cu|(copper_bottom)|\.bottom\.gbr$)|(\.((sol$)|(bot$)|(gbl$)))|(\.bottomlayer\.ger$)|(bottom copper\.txt$)/i
   },
   {
     id: 'bsm',
     name: {
       en: 'bottom soldermask'
     },
-    match: /(B.Mask|bottommask\.)|(\.((sts)|(bsm)|(gbs)|(smb)))|(\.bottomsoldermask\.ger)/i
+    match: /(B.Mask|(soldermask_bottom)|bottommask\.)|(\.((sts$)|(bsm$)|(gbs$)|(smb$)))|(\.bottomsoldermask\.ger$)|(bottom solder resist\.txt$)/i
   },
   {
     id: 'bss',
     name: {
       en: 'bottom silkscreen'
     },
-    match: /((B.SilkS)|(bottomsilk\.))|(\.((pls)|(bsk)|(gbo)|(ssb)))|(\.bottomsilkscreen\.ger)/i
+    match: /((B.SilkS)|(silkscreen_bottom)|(bottomsilk\.))|(\.((pls$)|(bsk$)|(gbo$)|(ssb$)))|(\.bottomsilkscreen\.ger$)|(bottom silk screen\.txt$)/i
   },
   {
     id: 'bsp',
     name: {
       en: 'bottom solderpaste'
     },
-    match: /(B.Paste)|(\.((crs)|(bsp)|(gbp)|(spb)))|(\.bcream\.ger)/i
+    match: /(B.Paste)|(solderpaste_bottom)|(\.((crs$)|(bsp$)|(gbp$)|(spb$)))|(\.bcream\.ger$)/i
   },
   {
     id: 'icu',
     name: {
       en: 'inner copper'
     },
-    match: /(In(ner)?\d+.Cu)|(\.((ly)|(g)|(in))\d+)|(\.internalplane\d+\.ger)/i
+    match: /(In(ner)?\d+.Cu)|(\.((ly)|(gp?)|(in))\d+$)|(\.internalplane\d+\.ger$)/i
   },
   {
     id: 'out',
     name: {
       en: 'board outline'
     },
-    match: /((Edge.Cuts)|(outline))|(\.((dim)|(mil)|(gm[l\d])|(gko)|(fab$)))|(\.boardoutline\.ger)/i
+    match: /(Edge.Cuts)|(profile)|(\.((dim$)|(mil$)|(gm(l|\d{1,2})$)|(gko$)|(fab$)))|(\.boardoutline\.ger$)|(\.outline\.gbr$)|(mechanical \d+\.txt$)/i
   },
   {
     id: 'drl',
     name: {
       en: 'drill hits'
     },
-    match: /\.((fab\.gbr)|(cnc)|(drl)|(xln)|(txt)|(tap)|(drd)|(exc))/i
+    match: /\.((fab\.gbr$)|(cnc$)|(drl$)|(xln$)|(txt$)|(tap$)|(drd$)|(exc$)|(npt$))/i
   },
   {
     id: 'drw',
@@ -33528,26 +33723,26 @@ var layerTypes = [
   }
 ]
 
-module.exports = function whatsThatGerber(filename) {
-  return find(layerTypes, function(type) {
+module.exports = function whatsThatGerber (filename) {
+  return find(layerTypes, function (type) {
     return type.match.test(filename)
   }).id
 }
 
-module.exports.getAllTypes = function() {
-  return layerTypes.map(function(type) {
+module.exports.getAllTypes = function () {
+  return layerTypes.map(function (type) {
     return type.id
   })
 }
 
-module.exports.isValidType = function(type) {
-  return layerTypes.some(function(layerType) {
+module.exports.isValidType = function (type) {
+  return layerTypes.some(function (layerType) {
     return layerType.id === type
   })
 }
 
-module.exports.getFullName = function whatsThatGerberTypeName(typeId, locale) {
-  var type = find(layerTypes, function(type) {
+module.exports.getFullName = function whatsThatGerberTypeName (typeId, locale) {
+  var type = find(layerTypes, function (type) {
     return type.id === typeId
   })
 
@@ -33588,5 +33783,26 @@ module.exports = function createXmlString(tag, attributes, children) {
   return start + middle + end
 }
 
-},{"escape-html":334}]},{},[1])(1)
+},{"escape-html":334}],501:[function(require,module,exports){
+module.exports = extend
+
+var hasOwnProperty = Object.prototype.hasOwnProperty;
+
+function extend() {
+    var target = {}
+
+    for (var i = 0; i < arguments.length; i++) {
+        var source = arguments[i]
+
+        for (var key in source) {
+            if (hasOwnProperty.call(source, key)) {
+                target[key] = source[key]
+            }
+        }
+    }
+
+    return target
+}
+
+},{}]},{},[1])(1)
 });
