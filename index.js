@@ -70,7 +70,7 @@ function stackupZip(zip) {
       const files = [];
       zip.forEach((path, file) => {
         if (!file.dir) {
-          const layerType = whatsThatGerber(file)
+          const layerType = whatsThatGerber(path)
           files.push(
             file
               .async("text")
