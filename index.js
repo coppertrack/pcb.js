@@ -1,5 +1,6 @@
 const polyfill = require("babel-polyfill");
 const pcbStackup = require("pcb-stackup");
+const gerberParser = require('gerber-parser')
 const superagent = require("superagent");
 const jszip = require("jszip");
 const whatsThatGerber = require('whats-that-gerber')
@@ -107,6 +108,37 @@ function stackupGerbers(layers, options) {
           "tcu",
         ]);
 
+        // Create a list of tools
+        var tools = {};
+
+        layers.forEach(layer => {
+          if (layer['options']['filetype'] === 'drill') {
+            var parser = gerberParser();
+            var commands = parser.parseSync(layer['gerber']);
+            var tooltype = undefined;
+
+            commands.forEach(command => {
+              // Create a list of tools
+              if (command['type'] === 'tool') {
+                tools[command['code']] = {
+                  'size': command['tool']['params'][0],
+                  'count': 0
+                }
+              }
+
+              // Select the tooltype
+              if (command['type'] === 'set' && command['prop'] === 'tool') {
+                tooltype = command['value'];
+              }
+
+              // As this runs sequential all tools are available in `tools`
+              if (tooltype !== undefined && tools.hasOwnProperty(tooltype)) {
+                tools[tooltype]['count']++;
+              }
+            })
+          }
+        });
+
         // If we were unable to count the number of layers something is wrong
         if (board_layers == 0) {
           return reject(new Error('No layers found'));
@@ -125,6 +157,7 @@ function stackupGerbers(layers, options) {
           board_width,
           board_length,
           board_layers,
+          tools,
           stackup,
         });
       });
