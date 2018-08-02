@@ -18,6 +18,7 @@ pcbStackupZip({
   console.log("board_width:", out.board_width);
   console.log("board_length:", out.board_length);
   console.log("board_layers:", out.board_layers);
+  console.log("tools:", out.tools);
   console.log("writing top.svg");
   fs.writeFile("top.svg", out.stackup.top.svg, err => {
     if (err) {

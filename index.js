@@ -1,7 +1,9 @@
 const polyfill = require("babel-polyfill");
 const pcbStackup = require("pcb-stackup");
+const gerberParser = require('gerber-parser')
 const superagent = require("superagent");
 const jszip = require("jszip");
+const whatsThatGerber = require('whats-that-gerber')
 
 const colorMap = {
   copperFinish: {
@@ -69,10 +71,17 @@ function stackupZip(zip) {
       const files = [];
       zip.forEach((path, file) => {
         if (!file.dir) {
+          const layerType = whatsThatGerber(path)
           files.push(
             file
               .async("text")
-              .then(contents => ({ gerber: contents, filename: path }))
+              .then(contents => ({
+                gerber: contents,
+                filename: path,
+                options: {
+                  filetype: (layerType === 'drl') ? 'drill' : 'gerber'
+                }
+              }))
           );
         }
       });
@@ -82,43 +91,80 @@ function stackupZip(zip) {
 
 function stackupGerbers(layers, options) {
   return new Promise((resolve, reject) => {
-    pcbStackup(layers, options, (err, stackup) => {
-      if (err) {
-        return reject(err);
-      }
+    try {
+      pcbStackup(layers, options, (err, stackup) => {
+        if (err) {
+          return reject(err);
+        }
 
-      // If we were unable to calculate the width and height something is wrong
-      if (stackup.top.width == 0 || stackup.top.height == 0) {
-        return reject(new Error('No outline found'));
-      }
+        // If we were unable to calculate the width and height something is wrong
+        if (stackup.top.width == 0 || stackup.top.height == 0) {
+          return reject(new Error('No outline found'));
+        }
 
-      const board_layers = countLayers(stackup.layers, [
-        "icu",
-        "bcu",
-        "tcu",
-      ]);
+        const board_layers = countLayers(stackup.layers, [
+          "icu",
+          "bcu",
+          "tcu",
+        ]);
 
-      // If we were unable to count the number of layers something is wrong
-      if (board_layers == 0) {
-        return reject(new Error('No layers found'));
-      }
+        // Create a list of tools
+        var tools = {};
 
-      let board_width = stackup.top.width;
-      let board_length = stackup.top.height;
+        layers.forEach(layer => {
+          if (layer['options']['filetype'] === 'drill') {
+            var parser = gerberParser();
+            var commands = parser.parseSync(layer['gerber']);
+            var tooltype = undefined;
 
-      // Convert to mm
-      if (stackup.top.units == "in") {
-        board_width = board_width * 25.4;
-        board_length = board_length * 25.4;
-      }
+            commands.forEach(command => {
+              // Create a list of tools
+              if (command['type'] === 'tool') {
+                tools[command['code']] = {
+                  'size': command['tool']['params'][0],
+                  'count': 0
+                }
+              }
 
-      return resolve({
-        board_width,
-        board_length,
-        board_layers,
-        stackup,
+              // Select the tooltype
+              if (command['type'] === 'set' && command['prop'] === 'tool') {
+                tooltype = command['value'];
+              }
+
+              // As this runs sequential all tools are available in `tools`
+              if (tooltype !== undefined && tools.hasOwnProperty(tooltype)) {
+                tools[tooltype]['count']++;
+              }
+            })
+          }
+        });
+
+        // If we were unable to count the number of layers something is wrong
+        if (board_layers == 0) {
+          return reject(new Error('No layers found'));
+        }
+
+        let board_width = stackup.top.width;
+        let board_length = stackup.top.height;
+
+        // Convert to mm
+        if (stackup.top.units == "in") {
+          board_width = board_width * 25.4;
+          board_length = board_length * 25.4;
+        }
+
+        return resolve({
+          board_width,
+          board_length,
+          board_layers,
+          tools,
+          stackup,
+        });
       });
-    });
+    }
+    catch (e) {
+      return reject(e);
+    }
   })
 }
 
