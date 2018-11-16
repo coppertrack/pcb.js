@@ -71,7 +71,8 @@ function stackupZip(zip) {
       const files = [];
       zip.forEach((path, file) => {
         if (!file.dir) {
-          const layerType = whatsThatGerber(path)
+          var wtg = whatsThatGerber(path)
+          var layerType = wtg[path]['type']
           files.push(
             file
               .async("text")
@@ -79,7 +80,7 @@ function stackupZip(zip) {
                 gerber: contents,
                 filename: path,
                 options: {
-                  filetype: (layerType === 'drl') ? 'drill' : 'gerber'
+                  filetype: (layerType === 'drill') ? 'drill' : 'gerber'
                 }
               }))
           );
@@ -102,11 +103,7 @@ function stackupGerbers(layers, options) {
           return reject(new Error('No outline found'));
         }
 
-        const board_layers = countLayers(stackup.layers, [
-          "icu",
-          "bcu",
-          "tcu",
-        ]);
+        const board_layers = countCopperLayers(stackup.layers);
 
         // Create a list of tools
         var tools = {};
@@ -204,6 +201,10 @@ function countLayers(layers, types) {
     }
   });
   return count;
+}
+
+function countCopperLayers(layers) {
+  return countLayers(layers, ["copper"])
 }
 
 module.exports = pcbJs;
