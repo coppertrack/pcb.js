@@ -10,7 +10,7 @@
   "dependencies": {
     "babel-polyfill": "^6.26.0",
     "jszip": "^3.2.1",
-    "pcb-stackup": "^4.0.1",
+    "pcb-stackup": "^4.2.0",
     "superagent": "^3.8.2"
   },
   "devDependencies": {
