@@ -1,12 +1,16 @@
 {
   "name": "@bellmann/pcb.js",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "main": "index.js",
-  "license": "Apache-2",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bellmann/pcb.js.git"
+  },
   "dependencies": {
     "babel-polyfill": "^6.26.0",
-    "jszip": "^3.1.5",
-    "pcb-stackup": "^4.0.0-next.15",
+    "jszip": "^3.2.1",
+    "pcb-stackup": "^4.2.0",
     "superagent": "^3.8.2"
   },
   "devDependencies": {
@@ -15,8 +19,8 @@
     "babelify": "^8.0.0",
     "browserify": "^13.3.0",
     "http-server": "^0.11.1",
-    "prettier": "^1.11.1",
-    "uglify-js": "^3.3.22"
+    "prettier": "^1.16.4",
+    "uglify-js": "^3.5.2"
   },
   "scripts": {
     "build-dist": "browserify index.js -t babelify -s pcbjs > dist/pcb.js && cat dist/pcb.js | uglifyjs -m -c --source-map --output dist/pcb.min.js",
