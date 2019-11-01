@@ -73,6 +73,12 @@ function stackupZip(zip) {
         if (!file.dir) {
           var wtg = whatsThatGerber(path)
           var layerType = wtg[path]['type']
+          
+          // Do not add layer if we have no clue what it is
+          if (!layerType) {
+            return
+          }
+          
           files.push(
             file
               .async("text")
